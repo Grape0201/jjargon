@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -14,6 +15,11 @@ def utc_now() -> datetime:
 
 def generate_term_id() -> str:
     return f"term-{uuid.uuid4().hex[:8]}"
+
+
+def normalize_key(text: str) -> str:
+    """表記揺れ（全角/半角、大文字/小文字、前後空白）を吸収するための正規化キーを返す"""
+    return unicodedata.normalize("NFKC", text).strip().casefold()
 
 
 class TermStatus(StrEnum):
@@ -221,15 +227,30 @@ class Glossary(BaseModel):
 
     def find_by_canonical(self, canonical_text: str) -> Term | None:
         normalized = canonical_text.strip()
+        if not normalized:
+            return None
         for term in self.terms:
             if term.canonical_text == normalized:
+                return term
+        norm_key = normalize_key(normalized)
+        for term in self.terms:
+            if normalize_key(term.canonical_text) == norm_key:
                 return term
         return None
 
     def find_by_surface(self, surface: str) -> Term | None:
         normalized = surface.strip()
+        if not normalized:
+            return None
         for term in self.terms:
             if normalized in term.all_surface_forms(include_pending=True):
+                return term
+        norm_key = normalize_key(normalized)
+        for term in self.terms:
+            if any(
+                normalize_key(f) == norm_key
+                for f in term.all_surface_forms(include_pending=True)
+            ):
                 return term
         return None
 
@@ -247,17 +268,17 @@ class Glossary(BaseModel):
         if not canonical:
             return None, "unchanged"
 
-        # 既存用語の検索（canonical_text または surface 一致）
+        # 既存用語の検索（canonical_text または surface 一致、正規化一致含む）
         existing = self.find_by_canonical(canonical) or self.find_by_surface(canonical)
 
-        # フォールバック: LLMが誤って誤認識語を canonical_text にし、本来の用語を aliases に入れた場合
+        # フォールバック: LLMが誤って別表記・誤認識語を canonical_text にし、本来の用語を aliases 等に入れた場合
         if existing is None:
-            for alias in proposal.aliases:
-                alias_clean = alias.strip()
-                if not alias_clean:
+            for candidate_form in [*proposal.aliases, *proposal.recognized_texts]:
+                form_clean = candidate_form.strip()
+                if not form_clean:
                     continue
-                found = self.find_by_canonical(alias_clean) or self.find_by_surface(
-                    alias_clean
+                found = self.find_by_canonical(form_clean) or self.find_by_surface(
+                    form_clean
                 )
                 if found is not None:
                     existing = found
@@ -278,10 +299,16 @@ class Glossary(BaseModel):
             if existing.status == TermStatus.DENIED:
                 return existing, "skipped_denied"
 
+            existing_norm_forms = {
+                normalize_key(f)
+                for f in existing.all_surface_forms(include_pending=False)
+            }
+
             new_aliases = [
                 a.strip()
                 for a in proposal.aliases
                 if a.strip()
+                and normalize_key(a) not in existing_norm_forms
                 and a.strip() != existing.canonical_text
                 and a.strip() not in existing.aliases
             ]
@@ -289,12 +316,14 @@ class Glossary(BaseModel):
                 r.strip()
                 for r in proposal.recognized_texts
                 if r.strip()
+                and normalize_key(r) not in existing_norm_forms
                 and r.strip() != existing.canonical_text
                 and r.strip() not in existing.recognized_texts
             ]
-            # もし proposal.canonical_text が既存用語の canonical_text と異なり、まだ登録されていなければ aliases 扱いにする
+            # もし proposal.canonical_text が既存用語の正規化表記一覧になく、まだ登録されていなければ aliases 扱いにする
             if (
-                canonical != existing.canonical_text
+                normalize_key(canonical) not in existing_norm_forms
+                and canonical != existing.canonical_text
                 and canonical not in existing.aliases
                 and canonical not in existing.recognized_texts
                 and canonical not in new_aliases

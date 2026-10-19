@@ -3,11 +3,12 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
-from jjargon.extractor import JargonExtractor
+from jjargon.extractor import JargonExtractor, build_user_prompt
 from jjargon.models import (
     CandidateProposal,
     ExtractionResponse,
     Glossary,
+    SudachiCandidate,
     Term,
     TermStatus,
     TextExtractionProposal,
@@ -210,3 +211,97 @@ def test_jargon_extractor_args_override_env(monkeypatch) -> None:
     assert extractor.model == "gpt-4o"
     assert extractor.api_base == "https://api.override.com"
     assert extractor.api_key == "arg-key"
+
+
+def test_build_user_prompt_filters_irrelevant_glossary_terms() -> None:
+    glossary = Glossary(
+        terms=[
+            # 1. 表層形が直接出現する用語
+            Term(
+                canonical_text="Kintone",
+                yomi="キントーン",
+                meaning="業務アプリ構築サービス",
+                status=TermStatus.APPROVED,
+            ),
+            # 2. 読みがSudachi候補と一致する用語（同音異義語・別表記の検出用）
+            Term(
+                canonical_text="高速炉",
+                yomi="コウソクロ",
+                status=TermStatus.APPROVED,
+            ),
+            # 3. 構成語が部分一致する用語（略称の検出用）
+            Term(
+                canonical_text="傾斜配分マトリクス",
+                yomi="ケイシャハイブンマトリクス",
+                status=TermStatus.APPROVED,
+            ),
+            # 4. チャンクに全く関係ない用語（除外されるべき）
+            Term(
+                canonical_text="無関係プロジェクトX",
+                yomi="ムカンケイプロジェクトエックス",
+                status=TermStatus.APPROVED,
+            ),
+            # 5. チャンク内に出現する却下済み用語（プロンプトに含まれるべき）
+            Term(
+                canonical_text="スケジュール",
+                status=TermStatus.DENIED,
+            ),
+            # 6. チャンク内に出現しない却下済み用語（除外されるべき）
+            Term(
+                canonical_text="不要な却下用語Z",
+                status=TermStatus.DENIED,
+            ),
+        ]
+    )
+
+    text_chunk = (
+        "Kintoneでスケジュールを確認し、拘束炉と傾斜マトリクスの資料を作成する。"
+    )
+    candidates = [
+        SudachiCandidate(
+            surface="拘束炉", yomi="コウソクロ", is_oov=False, is_compound=True
+        ),
+        SudachiCandidate(
+            surface="傾斜マトリクス",
+            yomi="ケイシャマトリクス",
+            is_oov=False,
+            is_compound=True,
+        ),
+    ]
+
+    prompt = build_user_prompt(
+        text_chunk=text_chunk,
+        sudachi_candidates=candidates,
+        glossary=glossary,
+    )
+
+    assert "Kintone" in prompt
+    assert "高速炉" in prompt
+    assert "傾斜配分マトリクス" in prompt
+    assert "無関係プロジェクトX" not in prompt
+
+    assert "スケジュール" in prompt
+    assert "不要な却下用語Z" not in prompt
+
+
+def test_build_user_prompt_respects_max_glossary_terms() -> None:
+    terms = [
+        Term(
+            canonical_text=f"テスト用語{i}",
+            yomi=f"テストヨウゴ{i}",
+            status=TermStatus.APPROVED,
+        )
+        for i in range(10)
+    ]
+    glossary = Glossary(terms=terms)
+    text_chunk = " ".join(t.canonical_text for t in terms)
+
+    prompt = build_user_prompt(
+        text_chunk=text_chunk,
+        sudachi_candidates=[],
+        glossary=glossary,
+        max_glossary_terms=3,
+    )
+
+    included_count = sum(1 for t in terms if f'"{t.canonical_text}"' in prompt)
+    assert included_count == 3

@@ -12,6 +12,7 @@ from jjargon.models import (
     Term,
     TermStatus,
     TextExtractionResponse,
+    normalize_key,
 )
 
 SYSTEM_PROMPT = """\
@@ -35,44 +36,162 @@ SYSTEM_PROMPT = """\
 """
 
 
+def _has_common_subword(text_a: str, text_b: str, min_len: int = 2) -> bool:
+    """2つの正規化済み文字列間に min_len 文字以上の共通部分文字列（構成語の手がかり）があるか判定する"""
+    if len(text_a) < min_len or len(text_b) < min_len:
+        return False
+    shorter, longer = (
+        (text_a, text_b) if len(text_a) <= len(text_b) else (text_b, text_a)
+    )
+    return any(
+        shorter[i : i + min_len] in longer for i in range(len(shorter) - min_len + 1)
+    )
+
+
+def select_relevant_terms(
+    text_chunk: str,
+    sudachi_candidates: list[SudachiCandidate],
+    glossary: Glossary,
+    max_terms: int = 50,
+) -> list[Term]:
+    """
+    チャンク本文およびSudachi抽出候補に関連する有効な専門用語（status != DENIED）のみを抽出し、
+    関連度スコア順で最大 max_terms 件まで返す。
+    """
+    if max_terms <= 0:
+        return []
+
+    norm_chunk = normalize_key(text_chunk)
+    cand_surfaces = {
+        normalize_key(form)
+        for c in sudachi_candidates
+        for form in (c.surface, c.normalized_form)
+        if form and normalize_key(form)
+    }
+    cand_yomis = {
+        normalize_key(c.yomi)
+        for c in sudachi_candidates
+        if c.yomi and len(normalize_key(c.yomi)) >= 2
+    }
+    long_cand_surfaces = [s for s in cand_surfaces if len(s) >= 2]
+    long_cand_yomis = [y for y in cand_yomis if len(y) >= 3]
+
+    scored_terms: list[tuple[int, int, int, Term]] = []
+
+    for idx, term in enumerate(glossary.terms):
+        if term.status == TermStatus.DENIED:
+            continue
+
+        norm_forms = [
+            normalize_key(f)
+            for f in term.all_surface_forms(include_pending=True)
+            if f and normalize_key(f)
+        ]
+        norm_yomi = normalize_key(term.yomi) if term.yomi else ""
+
+        score = 0
+        # Score 3: 表層形（正式表記・別表記・誤認識）がチャンク本文またはSudachi候補に出現
+        if any(nf in norm_chunk or nf in cand_surfaces for nf in norm_forms):
+            score = 3
+        else:
+            # Score 2: 読みの一致、または構成語（2文字以上）の部分一致（略称・別表記の検出用）
+            yomi_match = bool(
+                len(norm_yomi) >= 3
+                and (
+                    norm_yomi in norm_chunk
+                    or norm_yomi in cand_yomis
+                    or any(norm_yomi in cy or cy in norm_yomi for cy in long_cand_yomis)
+                )
+            )
+            subword_match = any(
+                _has_common_subword(cs, nf, min_len=2)
+                for nf in norm_forms
+                for cs in long_cand_surfaces
+            )
+            if yomi_match or subword_match:
+                score = 2
+
+        if score > 0:
+            scored_terms.append((score, len(term.canonical_text), -idx, term))
+
+    scored_terms.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    return [item[3] for item in scored_terms[:max_terms]]
+
+
+def select_relevant_denied_surfaces(
+    text_chunk: str,
+    sudachi_candidates: list[SudachiCandidate],
+    glossary: Glossary,
+) -> list[str]:
+    """
+    却下済み用語（status == DENIED）のうち、チャンク本文またはSudachi候補に出現する表層形のみを返す。
+    """
+    norm_chunk = normalize_key(text_chunk)
+    cand_surfaces = {
+        normalize_key(form)
+        for c in sudachi_candidates
+        for form in (c.surface, c.normalized_form)
+        if form and normalize_key(form)
+    }
+
+    matched: set[str] = set()
+    for term in glossary.terms:
+        if term.status != TermStatus.DENIED:
+            continue
+        for form in term.all_surface_forms(include_pending=False):
+            nf = normalize_key(form)
+            if nf and (nf in norm_chunk or nf in cand_surfaces):
+                matched.add(form)
+    return sorted(matched)
+
+
+def _format_term_for_prompt(term: Term) -> dict[str, object]:
+    """プロンプト埋め込み用に空フィールドを省いた辞書を作成する"""
+    entry: dict[str, object] = {"canonical_text": term.canonical_text}
+    if term.yomi:
+        entry["yomi"] = term.yomi
+    if term.aliases:
+        entry["aliases"] = term.aliases
+    if term.meaning:
+        entry["meaning"] = term.meaning
+    if term.term_type:
+        entry["term_type"] = term.term_type
+    if term.domain:
+        entry["domain"] = term.domain
+    return entry
+
+
 def build_user_prompt(
     text_chunk: str,
     sudachi_candidates: list[SudachiCandidate],
     glossary: Glossary,
     domain: str | None = None,
+    max_glossary_terms: int = 50,
 ) -> str:
     sections: list[str] = []
     if domain:
         sections.append(f"## 対象ドメイン\n{domain}")
 
-    active_terms = [
-        {
-            "canonical_text": t.canonical_text,
-            "yomi": t.yomi,
-            "aliases": t.aliases,
-            "meaning": t.meaning,
-            "term_type": t.term_type,
-            "domain": t.domain,
-        }
-        for t in glossary.terms
-        if t.status != TermStatus.DENIED
-    ]
-    if active_terms:
+    relevant_terms = select_relevant_terms(
+        text_chunk=text_chunk,
+        sudachi_candidates=sudachi_candidates,
+        glossary=glossary,
+        max_terms=max_glossary_terms,
+    )
+    if relevant_terms:
+        active_terms = [_format_term_for_prompt(t) for t in relevant_terms]
         sections.append(
             "## 現在の専門用語集\n"
             + json.dumps(active_terms, ensure_ascii=False, indent=2)
         )
 
-    denied = {
-        form
-        for t in glossary.terms
-        if t.status == TermStatus.DENIED
-        for form in t.all_surface_forms(include_pending=False)
-    }
+    denied = select_relevant_denied_surfaces(
+        text_chunk=text_chunk,
+        sudachi_candidates=sudachi_candidates,
+        glossary=glossary,
+    )
     if denied:
-        sections.append(
-            f"## 却下済み用語リスト (抽出対象外)\n{', '.join(sorted(denied))}"
-        )
+        sections.append(f"## 却下済み用語リスト (抽出対象外)\n{', '.join(denied)}")
 
     cand_lines = [
         f"- {c.surface} (読み: {c.yomi}, 種別: {'OOV' if c.is_oov else '複合名詞'}, 出現回数: {c.count})"
@@ -94,6 +213,7 @@ class JargonExtractor:
         api_base: str | None = None,
         api_key: str | None = None,
         max_chunk_chars: int = 4000,
+        max_glossary_terms: int = 50,
     ) -> None:
         self.analyzer = SudachiAnalyzer()
         self.model = model or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
@@ -101,6 +221,7 @@ class JargonExtractor:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or "not-needed"
         self.client = OpenAI(base_url=self.api_base, api_key=self.api_key)
         self.max_chunk_chars = max_chunk_chars
+        self.max_glossary_terms = max_glossary_terms
 
     def extract_candidates(
         self,
@@ -114,7 +235,9 @@ class JargonExtractor:
             sudachi_candidates=sudachi_candidates,
             glossary=glossary,
             domain=domain,
+            max_glossary_terms=self.max_glossary_terms,
         )
+
         completion = self.client.beta.chat.completions.parse(
             model=self.model,
             messages=[

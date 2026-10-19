@@ -142,3 +142,56 @@ def test_glossary_merge_fallback_when_canonical_is_misrecognition() -> None:
     # 「拘束炉」「拘束路」の双方が誤認識として pending_updates に追加されていること
     assert "拘束炉" in term.pending_updates.recognized_texts
     assert "拘束路" in term.pending_updates.recognized_texts
+
+
+def test_glossary_merge_normalized_deduplication() -> None:
+    """プロンプトから除外された既存用語と大文字小文字・全角半角揺れがある提案でも重複登録されないこと"""
+    glossary = Glossary(
+        terms=[
+            Term(
+                id="term-kintone",
+                canonical_text="Kintone",
+                yomi="キントーン",
+                aliases=["サイボウズKintone"],
+                status=TermStatus.APPROVED,
+            ),
+            Term(
+                id="term-denied",
+                canonical_text="GitHub",
+                status=TermStatus.DENIED,
+            ),
+        ]
+    )
+
+    # 1. 全角・小文字の「ｋｉｎｔｏｎｅ」が new_term として提案された場合、新規追加にならず既存Kintoneに紐づくこと
+    p_dup = CandidateProposal(
+        proposal_type="new_term",
+        canonical_text="ｋｉｎｔｏｎｅ",
+        yomi="キントーン",
+    )
+    term, action = glossary.merge_proposal(p_dup)
+    assert term is not None
+    assert term.id == "term-kintone"
+    assert action == "unchanged"
+    assert len(glossary.terms) == 2
+
+    # 2. 新しい別表記を伴う場合は updated_pending になること
+    p_with_new_alias = CandidateProposal(
+        proposal_type="new_term",
+        canonical_text="kintone",
+        aliases=["キントーン基盤"],
+    )
+    term2, action2 = glossary.merge_proposal(p_with_new_alias)
+    assert term2 is not None
+    assert term2.id == "term-kintone"
+    assert action2 == "updated_pending"
+    assert term2.pending_updates is not None
+    assert term2.pending_updates.aliases == ["キントーン基盤"]
+
+    # 3. 却下済み用語（GitHub）が小文字・全角混じりで再提案されても skipped_denied になること
+    p_denied_norm = CandidateProposal(
+        proposal_type="new_term",
+        canonical_text="ｇｉｔｈｕｂ",
+    )
+    _, action_denied = glossary.merge_proposal(p_denied_norm)
+    assert action_denied == "skipped_denied"
