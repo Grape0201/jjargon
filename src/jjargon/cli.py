@@ -4,6 +4,14 @@ from typing import Annotated
 import typer
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from jjargon.analyzer import SudachiAnalyzer
@@ -157,15 +165,27 @@ def extract_cmd(
         f"既存用語数: {len(glossary.terms)} 件 | モデル: [bold]{extractor.model}[/bold]"
     )
 
-    with console.status(
-        f"[bold green]Sudachi解析 & AIによる専門用語抽出中...[/bold green] "
-        f"[dim](モデル: {extractor.model})[/dim]"
-    ):
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("回 API呼び出し"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task_id = progress.add_task(
+            f"[bold green]Sudachi解析 & AI専門用語抽出中[/bold green] [dim]({extractor.model})[/dim]",
+            total=None,
+        )
         _proposals, summary = extractor.extract_and_merge(
             text=text,
             glossary=glossary,
             domain=domain,
             include_compounds=not no_compounds,
+            on_progress=lambda current, total: progress.update(
+                task_id, completed=current, total=total
+            ),
         )
 
     elapsed_time = time.time() - start_time

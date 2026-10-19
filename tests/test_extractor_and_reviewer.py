@@ -305,3 +305,23 @@ def test_build_user_prompt_respects_max_glossary_terms() -> None:
 
     included_count = sum(1 for t in terms if f'"{t.canonical_text}"' in prompt)
     assert included_count == 3
+
+
+def test_extract_and_merge_on_progress_callback(monkeypatch) -> None:
+    extractor = JargonExtractor(max_chunk_chars=20)
+    monkeypatch.setattr(
+        extractor,
+        "extract_candidates",
+        lambda *args, **kwargs: ExtractionResponse(proposals=[]),
+    )
+
+    progress_steps: list[tuple[int, int]] = []
+    text = "一文目のテキストです。\n二文目のテキストです。\n三文目のテキストです。"
+    extractor.extract_and_merge(
+        text=text,
+        glossary=Glossary(),
+        on_progress=lambda current, total: progress_steps.append((current, total)),
+    )
+
+    assert progress_steps == [(0, 3), (1, 3), (2, 3), (3, 3)]
+

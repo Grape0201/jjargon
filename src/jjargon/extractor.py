@@ -1,3 +1,4 @@
+from collections.abc import Callable
 import json
 import os
 
@@ -282,8 +283,13 @@ class JargonExtractor:
         glossary: Glossary,
         domain: str | None = None,
         include_compounds: bool = True,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> tuple[list[CandidateProposal], dict[str, list[Term]]]:
         chunks = self.chunk_text(text)
+        total_chunks = len(chunks)
+        if on_progress is not None:
+            on_progress(0, total_chunks)
+
         all_proposals: list[CandidateProposal] = []
         summary: dict[str, list[Term]] = {
             "added": [],
@@ -293,7 +299,7 @@ class JargonExtractor:
             "unchanged": [],
         }
 
-        for chunk in chunks:
+        for idx, chunk in enumerate(chunks, start=1):
             sudachi_candidates = self.analyzer.analyze(
                 text=chunk,
                 glossary=glossary,
@@ -314,5 +320,7 @@ class JargonExtractor:
                     and term not in summary[action]
                 ):
                     summary[action].append(term)
+            if on_progress is not None:
+                on_progress(idx, total_chunks)
 
         return all_proposals, summary
