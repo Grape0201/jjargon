@@ -15,7 +15,7 @@ def load_glossary(path: Path) -> Glossary:
         return Glossary()
 
     suffix = path.suffix.lower()
-    assert suffix == "yaml"
+    assert suffix == ".yaml"
     data = yaml.safe_load(content)
 
     if data is None:
