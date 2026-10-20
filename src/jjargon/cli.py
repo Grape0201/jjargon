@@ -15,7 +15,7 @@ from rich.progress import (
 from rich.table import Table
 
 from jjargon.analyzer import SudachiAnalyzer
-from jjargon.extractor import JargonExtractor
+from jjargon.extractor import ExtractionMode, JargonExtractor
 from jjargon.models import TermStatus
 from jjargon.reviewer import interactive_review
 from jjargon.storage import load_glossary, save_glossary
@@ -112,45 +112,50 @@ def extract_cmd(
         Path,
         typer.Option("--glossary", "-g", help="保存先の専門用語集ファイル (YAML/JSON)"),
     ] = Path("glossary.yaml"),
+    mode: Annotated[
+        ExtractionMode,
+        typer.Option(
+            "--mode",
+            "-M",
+            help="専門用語抽出の実行モード (hybrid: System1トリアージ+System2生成, system-one-only: System1のみ, system-two-only: System2のみ)",
+            case_sensitive=False,
+        ),
+    ] = ExtractionMode.HYBRID,
     domain: Annotated[
         str | None,
         typer.Option("--domain", "-d", help="部署名やプロジェクト名などのドメイン指定"),
     ] = None,
+    # System Two (生成LLM) オプション
     model: Annotated[
         str | None,
         typer.Option(
             "--model",
             "-m",
-            help="OpenAI互換モデル名 (例: gpt-4o-mini, qwen2.5:14b)",
+            help="System Two (生成LLM) モデル名 (例: gpt-4o-mini, qwen2.5:14b)",
         ),
     ] = None,
     api_base: Annotated[
         str | None,
         typer.Option(
             "--api-base",
-            help="LLMサーバーのAPI Base URL (環境変数 OPENAI_BASE_URL も利用可能)",
+            help="System Two (生成LLM) API Base URL (環境変数 OPENAI_BASE_URL も利用可能)",
         ),
     ] = None,
     api_key: Annotated[
         str | None,
         typer.Option(
             "--api-key",
-            help="LLMサーバーのAPI Key (環境変数 OPENAI_API_KEY も利用可能)",
+            help="System Two (生成LLM) API Key (環境変数 OPENAI_API_KEY も利用可能)",
         ),
     ] = None,
-    no_compounds: Annotated[
-        bool,
-        typer.Option(
-            "--no-compounds", help="複合名詞の抽出を無効化し、OOVと文脈のみで抽出する"
-        ),
-    ] = False,
     compact: Annotated[
         bool,
         typer.Option(
             "--compact/--full-schema",
-            help="LLM出力スキーマを極小化し、読み(yomi)・例文(examples)をSudachiから自動補完して高速化する",
+            help="System Two の出力スキーマを極小化し、読み(yomi)・例文(examples)をSudachiから自動補完して高速化する",
         ),
     ] = True,
+    # System One (意思決定モデル) オプション
     systemone_model: Annotated[
         str | None,
         typer.Option(
@@ -172,20 +177,12 @@ def extract_cmd(
             help="System One の noul (専門用語らしさ) 採用閾値 (0.0〜1.0)",
         ),
     ] = 0.75,
-    systemone_only: Annotated[
+    no_compounds: Annotated[
         bool,
         typer.Option(
-            "--systemone-only",
-            help="生成LLMを使用せず、Sudachi + System One のみで超高速抽出を行う",
+            "--no-compounds", help="複合名詞の抽出を無効化し、OOVと文脈のみで抽出する"
         ),
     ] = False,
-    use_systemone: Annotated[
-        bool | None,
-        typer.Option(
-            "--use-systemone/--no-systemone",
-            help="System One による候補フィルタ・チャンクスキップの有効/無効を明示指定する",
-        ),
-    ] = None,
     review_now: Annotated[
         bool,
         typer.Option(
@@ -199,6 +196,7 @@ def extract_cmd(
 
     try:
         extractor = JargonExtractor(
+            mode=mode,
             model=model,
             api_base=api_base,
             api_key=api_key,
@@ -206,8 +204,6 @@ def extract_cmd(
             systemone_model=systemone_model,
             systemone_url=systemone_url,
             systemone_threshold=systemone_threshold,
-            systemone_only=systemone_only,
-            use_systemone=use_systemone,
         )
     except ValueError as e:
         console.print(f"[red]エラー: {e}[/red]")

@@ -56,17 +56,19 @@ uv run jjargon analyze sample.txt
 ### 2. テキストから専門用語・誤認識候補を抽出して用語集に保存する（Step 1〜3）
 
 ```bash
-# 標準高速抽出（極小スキーマ --compact ＋ Sudachiの読み・例文自動補完）
+# ハイブリッドモード (デフォルト): System One (kev:latest) で事前トリアージし、System Two (生成LLM) で構造化抽出
 uv run jjargon extract sample.txt --glossary glossary.yaml --domain "情報システム部"
+# または明示指定:
+uv run jjargon extract sample.txt -g glossary.yaml --mode hybrid
 
-# 従来の全フィールドLLM出力スキーマを使う場合
+# System One 完結モード: 生成LLMを一切使わず、Sudachi + System One のみで超高速抽出
+uv run jjargon extract sample.txt -g glossary.yaml --mode system-one-only
+
+# System Two 単体モード: System One を使わず、生成LLM単体で抽出
+uv run jjargon extract sample.txt -g glossary.yaml --mode system-two-only
+
+# 従来の全フィールドLLM出力スキーマを使う場合 (--compact がデフォルト)
 uv run jjargon extract sample.txt -g glossary.yaml --full-schema
-
-# ハイブリッドモード: System One モデル (kev:latest) でSudachi候補を事前フィルタ＆チャンクスキップし、残りをLLMで抽出（環境変数またはオプションで指定）
-uv run jjargon extract sample.txt -g glossary.yaml --systemone-model kev:latest --systemone-url http://localhost:11434/v1/systemone
-
-# System One 完結モード: 生成LLMを一切使わず、Sudachi + System One (noul / choice) のみで超高速抽出
-uv run jjargon extract sample.txt -g glossary.yaml --systemone-model kev:latest --systemone-url http://localhost:11434/v1/systemone --systemone-only
 ```
 
 ### 3. 抽出された候補を人間がレビューして承認・編集・却下する（Step 4）

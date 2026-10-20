@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
-from jjargon.extractor import JargonExtractor, build_user_prompt
+from jjargon.extractor import ExtractionMode, JargonExtractor, build_user_prompt
 from jjargon.models import (
     CandidateProposal,
     CompactExtractionProposal,
@@ -480,8 +480,8 @@ def test_systemone_only_mode_extracts_and_merges_without_llm(monkeypatch) -> Non
     )
 
     extractor = JargonExtractor(
-        systemone_client=s1_client,
-        systemone_only=True,
+        mode=ExtractionMode.SYSTEM_ONE_ONLY,
+        system_one=s1_client,
     )
 
     text = "来期予算は傾斜マトリクスで算出し、年末調整はSmartHRで行います。"
@@ -514,6 +514,9 @@ def test_systemone_client_missing_config_raises_error(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="System One エンドポイントURLが指定されていません"):
         SystemOneClient(model="kev:latest", url=None)
+
+    with pytest.raises(ValueError, match="System One モデルが指定されていません"):
+        JargonExtractor(mode=ExtractionMode.SYSTEM_ONE_ONLY)
 
     with pytest.raises(ValueError, match="System One モデルが指定されていません"):
         JargonExtractor(systemone_only=True)

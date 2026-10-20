@@ -40,8 +40,22 @@ class ExtractionMode(StrEnum):
     """専門用語抽出パイプラインの実行モード"""
 
     HYBRID = "hybrid"  # System 1 でトリアージ・候補絞り込み -> System 2 で生成抽出
-    SYSTEM_ONE_ONLY = "system_one_only"  # System 1 のみで判定・分類抽出 (LLM生成不使用・最速)
-    SYSTEM_TWO_ONLY = "system_two_only"  # System 2 のみで生成抽出 (System 1 不使用)
+    SYSTEM_ONE_ONLY = "system-one-only"  # System 1 のみで判定・分類抽出 (LLM生成不使用・最速)
+    SYSTEM_TWO_ONLY = "system-two-only"  # System 2 のみで生成抽出 (System 1 不使用)
+
+    @classmethod
+    def from_str(cls, val: str | ExtractionMode) -> ExtractionMode:
+        """文字列や既存の列挙値から柔軟に正規化して ExtractionMode を取得する"""
+        if isinstance(val, cls):
+            return val
+        norm = str(val).lower().replace("_", "-").strip()
+        if norm in ("system-one-only", "system-one", "s1"):
+            return cls.SYSTEM_ONE_ONLY
+        if norm in ("system-two-only", "system-two", "s2", "llm-only"):
+            return cls.SYSTEM_TWO_ONLY
+        if norm in ("hybrid", "both"):
+            return cls.HYBRID
+        return cls(norm)
 
 
 class JargonExtractor:
@@ -80,10 +94,8 @@ class JargonExtractor:
             self.mode = ExtractionMode.SYSTEM_ONE_ONLY
         elif use_systemone is False:
             self.mode = ExtractionMode.SYSTEM_TWO_ONLY
-        elif isinstance(mode, str):
-            self.mode = ExtractionMode(mode)
         else:
-            self.mode = mode
+            self.mode = ExtractionMode.from_str(mode)
 
         # 2. System Two (生成LLM) クライアントの解決
         if self.mode in (ExtractionMode.HYBRID, ExtractionMode.SYSTEM_TWO_ONLY):
