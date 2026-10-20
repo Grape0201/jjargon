@@ -123,6 +123,7 @@ class SystemOneClient:
         *,
         model: str | None = None,
         url: str | None = None,
+        api_key: str | None = None,
         threshold: float = 0.75,
         batch_size: int = 16,
         timeout: float = 60.0,
@@ -133,6 +134,7 @@ class SystemOneClient:
             self.config = SystemOneConfig.from_env(
                 model=model,
                 url=url,
+                api_key=api_key,
                 threshold=threshold,
                 batch_size=batch_size,
                 timeout=timeout,
@@ -148,6 +150,7 @@ class SystemOneClient:
         cls,
         model: str | None = None,
         url: str | None = None,
+        api_key: str | None = None,
         threshold: float = 0.75,
         batch_size: int = 16,
         timeout: float = 60.0,
@@ -156,6 +159,7 @@ class SystemOneClient:
             config=SystemOneConfig.from_env(
                 model=model,
                 url=url,
+                api_key=api_key,
                 threshold=threshold,
                 batch_size=batch_size,
                 timeout=timeout,
@@ -169,6 +173,10 @@ class SystemOneClient:
     @property
     def url(self) -> str:
         return self.config.url or ""
+
+    @property
+    def api_key(self) -> str | None:
+        return self.config.api_key
 
     @property
     def threshold(self) -> float:
@@ -191,10 +199,16 @@ class SystemOneClient:
             "state": state,
             "questions": questions,
         }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key and self.api_key.strip():
+            key = self.api_key.strip()
+            headers["Authorization"] = (
+                key if key.startswith("Bearer ") else f"Bearer {key}"
+            )
         req = urllib.request.Request(
             self.url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         self.call_count += 1

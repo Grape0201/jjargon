@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -175,6 +176,14 @@ def extract_cmd(
             help="System One API URL (例: http://localhost:11434/v1/systemone / 環境変数 SYSTEMONE_URL も利用可能)",
         ),
     ] = None,
+    systemone_api_key: Annotated[
+        str | None,
+        typer.Option(
+            "--systemone-api-key",
+            "--systemone-key",
+            help="System One API Key (環境変数 SYSTEMONE_API_KEY も利用可能)",
+        ),
+    ] = None,
     systemone_threshold: Annotated[
         float,
         typer.Option(
@@ -199,23 +208,35 @@ def extract_cmd(
     text = input_file.read_text(encoding="utf-8")
     glossary = load_glossary(glossary_path)
 
-    llm_config = LLMConfig.from_env(
-        model=model,
-        api_base=api_base,
-        api_key=api_key,
-        compact_mode=compact,
-    )
-    s1_config = (
-        SystemOneConfig(
-            model=systemone_model,
-            url=systemone_url,
-            threshold=systemone_threshold,
-        )
-        if (systemone_model or systemone_url)
-        else None
-    )
-
     try:
+        llm_config = LLMConfig.from_env(
+            model=model,
+            api_base=api_base,
+            api_key=api_key,
+            compact_mode=compact,
+        )
+        has_s1_options = bool(
+            systemone_model
+            or systemone_url
+            or systemone_api_key
+            or os.environ.get("SYSTEMONE_MODEL")
+            or os.environ.get("SYSTEMONE_URL")
+        )
+        s1_config = (
+            SystemOneConfig.from_env(
+                model=systemone_model,
+                url=systemone_url,
+                api_key=systemone_api_key,
+                threshold=systemone_threshold,
+            )
+            if (
+                has_s1_options
+                and ExtractionMode.from_str(mode) != ExtractionMode.SYSTEM_TWO_ONLY
+            )
+            or ExtractionMode.from_str(mode) == ExtractionMode.SYSTEM_ONE_ONLY
+            else None
+        )
+
         extractor = JargonExtractor(
             mode=mode,
             llm_config=llm_config,

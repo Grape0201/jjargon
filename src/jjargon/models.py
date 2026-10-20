@@ -599,6 +599,7 @@ class SystemOneConfig(BaseModel):
 
     model: str | None = None
     url: str | None = Field(default=None, alias="base_url")
+    api_key: str | None = Field(default=None, alias="key")
     threshold: float = 0.75
     batch_size: int = 16
     timeout: float = 60.0
@@ -607,11 +608,16 @@ class SystemOneConfig(BaseModel):
     def base_url(self) -> str | None:
         return self.url
 
+    @property
+    def key(self) -> str | None:
+        return self.api_key
+
     @classmethod
     def from_env(
         cls,
         model: str | None = None,
         url: str | None = None,
+        api_key: str | None = None,
         threshold: float = 0.75,
         batch_size: int = 16,
         timeout: float = 60.0,
@@ -622,14 +628,25 @@ class SystemOneConfig(BaseModel):
             raise ValueError(
                 "System One モデルが指定されていません。環境変数 SYSTEMONE_MODEL または --systemone-model オプションで指定してください。"
             )
-        resolved_url = url or os.environ.get("SYSTEMONE_URL")
+        resolved_url = (
+            url
+            or kwargs.pop("base_url", None)
+            or kwargs.pop("base", None)
+            or os.environ.get("SYSTEMONE_URL")
+        )
         if not resolved_url:
             raise ValueError(
                 "System One エンドポイントURLが指定されていません。環境変数 SYSTEMONE_URL または --systemone-url オプションで指定してください。"
             )
+        resolved_api_key = (
+            api_key
+            or kwargs.pop("key", None)
+            or os.environ.get("SYSTEMONE_API_KEY")
+        )
         return cls(
             model=resolved_model,
             url=resolved_url,
+            api_key=resolved_api_key,
             threshold=threshold,
             batch_size=batch_size,
             timeout=timeout,

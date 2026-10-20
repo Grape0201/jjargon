@@ -550,6 +550,99 @@ def test_system_one_config_struct() -> None:
     assert config.url == "http://localhost:11434/v1/systemone"
     assert config.base_url == "http://localhost:11434/v1/systemone"
     assert config.threshold == 0.8
+    assert config.api_key is None
+    assert config.key is None
+
+    # api_key 引数および key エイリアスでの指定
+    config_with_key = SystemOneConfig(
+        model="kev:v2",
+        url="http://localhost:11434/v1/systemone",
+        api_key="test-api-key",
+    )
+    assert config_with_key.api_key == "test-api-key"
+    assert config_with_key.key == "test-api-key"
+
+    config_with_alias = SystemOneConfig(
+        model="kev:v2",
+        base_url="http://localhost:11434/v1/systemone",
+        key="alias-key",
+    )
+    assert config_with_alias.api_key == "alias-key"
+    assert config_with_alias.key == "alias-key"
+
+
+def test_system_one_config_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("SYSTEMONE_MODEL", "kev:latest")
+    monkeypatch.setenv("SYSTEMONE_URL", "http://localhost:11434/v1/systemone")
+    monkeypatch.setenv("SYSTEMONE_API_KEY", "env-s1-key")
+
+    # 1. 環境変数からの自動読み込み
+    cfg = SystemOneConfig.from_env()
+    assert cfg.model == "kev:latest"
+    assert cfg.url == "http://localhost:11434/v1/systemone"
+    assert cfg.api_key == "env-s1-key"
+    assert cfg.key == "env-s1-key"
+
+    # 2. 引数による明示的オーバーライド
+    cfg_override = SystemOneConfig.from_env(api_key="override-key")
+    assert cfg_override.api_key == "override-key"
+    assert cfg_override.key == "override-key"
+
+    # 3. エイリアス引数 key によるオーバーライド
+    cfg_alias = SystemOneConfig.from_env(key="alias-override-key")
+    assert cfg_alias.api_key == "alias-override-key"
+
+
+def test_system_one_client_headers(monkeypatch) -> None:
+    import io
+
+    captured_requests: list[Any] = []
+
+    def fake_urlopen(req, timeout=60.0):
+        captured_requests.append(req)
+        # 返り値モック (空の answers)
+        resp_bytes = b'{"answers": {}}'
+        mock_resp = io.BytesIO(resp_bytes)
+        mock_resp.read = lambda *a: resp_bytes
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = lambda s, *exc: None
+        return mock_resp
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    # 1. API キー未指定の場合: Authorization ヘッダーが含まれないこと
+    client_no_key = SystemOneClient(
+        model="kev:latest",
+        url="http://localhost:11434/v1/systemone",
+    )
+    client_no_key.call(state={}, questions={"q1": {"type": "noul"}})
+    assert len(captured_requests) == 1
+    req1 = captured_requests[0]
+    assert req1.has_header("Authorization") is False
+
+    # 2. API キー指定の場合: Authorization: Bearer <key> が設定されること
+    client_with_key = SystemOneClient(
+        model="kev:latest",
+        url="http://localhost:11434/v1/systemone",
+        api_key="secret-token-123",
+    )
+    assert client_with_key.api_key == "secret-token-123"
+    client_with_key.call(state={}, questions={"q1": {"type": "noul"}})
+    assert len(captured_requests) == 2
+    req2 = captured_requests[1]
+    assert req2.has_header("Authorization") is True
+    assert req2.get_header("Authorization") == "Bearer secret-token-123"
+
+    # 3. すでに Bearer 接頭辞が付いている場合: 二重付与されないこと
+    client_bearer = SystemOneClient(
+        model="kev:latest",
+        url="http://localhost:11434/v1/systemone",
+        api_key="Bearer already-bearer",
+    )
+    client_bearer.call(state={}, questions={"q1": {"type": "noul"}})
+    assert len(captured_requests) == 3
+    req3 = captured_requests[2]
+    assert req3.get_header("Authorization") == "Bearer already-bearer"
 
 
 def test_extract_and_merge_mode_override(monkeypatch) -> None:

@@ -76,6 +76,7 @@ def test_cli_analyze_and_list_and_export_sudachi(tmp_path: Path) -> None:
 def test_cli_extract_mode_missing_systemone_error(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("SYSTEMONE_MODEL", raising=False)
     monkeypatch.delenv("SYSTEMONE_URL", raising=False)
+    monkeypatch.delenv("SYSTEMONE_API_KEY", raising=False)
 
     sample_txt = tmp_path / "sample.txt"
     sample_txt.write_text("テストテキスト", encoding="utf-8")
@@ -86,3 +87,97 @@ def test_cli_extract_mode_missing_systemone_error(tmp_path: Path, monkeypatch) -
     )
     assert result.exit_code == 1
     assert "System One モデルが指定されていません" in result.stdout
+
+
+def test_cli_extract_accepts_systemone_api_key(tmp_path: Path, monkeypatch) -> None:
+    sample_txt = tmp_path / "sample.txt"
+    sample_txt.write_text("テストテキスト", encoding="utf-8")
+
+    captured_extractors = []
+    original_init = app
+
+    from jjargon.extractor import JargonExtractor
+
+    orig_init = JargonExtractor.__init__
+
+    def fake_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        captured_extractors.append(self)
+
+    monkeypatch.setattr(JargonExtractor, "__init__", fake_init)
+    monkeypatch.setattr(
+        JargonExtractor,
+        "extract_and_merge",
+        lambda self, *a, **k: (
+            [],
+            {
+                "added": [],
+                "updated_pending": [],
+                "merged_pending": [],
+                "skipped_denied": [],
+            },
+        ),
+    )
+
+    # 1. --systemone-api-key オプション指定
+    result = runner.invoke(
+        app,
+        [
+            "extract",
+            str(sample_txt),
+            "--mode",
+            "system-one-only",
+            "--systemone-model",
+            "kev:latest",
+            "--systemone-url",
+            "http://localhost:11434/v1/systemone",
+            "--systemone-api-key",
+            "cli-secret-key",
+        ],
+    )
+    assert result.exit_code == 0
+    assert len(captured_extractors) >= 1
+    ext1 = captured_extractors[-1]
+    assert ext1.system_one is not None
+    assert ext1.system_one.api_key == "cli-secret-key"
+
+    # 2. --systemone-key エイリアス指定
+    result2 = runner.invoke(
+        app,
+        [
+            "extract",
+            str(sample_txt),
+            "--mode",
+            "system-one-only",
+            "--systemone-model",
+            "kev:latest",
+            "--systemone-url",
+            "http://localhost:11434/v1/systemone",
+            "--systemone-key",
+            "alias-secret-key",
+        ],
+    )
+    assert result2.exit_code == 0
+    ext2 = captured_extractors[-1]
+    assert ext2.system_one is not None
+    assert ext2.system_one.api_key == "alias-secret-key"
+
+    # 3. 環境変数 SYSTEMONE_API_KEY
+    monkeypatch.setenv("SYSTEMONE_API_KEY", "env-secret-key")
+    result3 = runner.invoke(
+        app,
+        [
+            "extract",
+            str(sample_txt),
+            "--mode",
+            "system-one-only",
+            "--systemone-model",
+            "kev:latest",
+            "--systemone-url",
+            "http://localhost:11434/v1/systemone",
+        ],
+    )
+    assert result3.exit_code == 0
+    ext3 = captured_extractors[-1]
+    assert ext3.system_one is not None
+    assert ext3.system_one.api_key == "env-secret-key"

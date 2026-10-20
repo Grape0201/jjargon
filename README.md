@@ -41,6 +41,8 @@ export OPENAI_MODEL="qwen2.5:14b"
 # System One モデル（Ollama /v1/systemone, kev:latest 等）を併用する場合
 export SYSTEMONE_URL="http://localhost:11434/v1/systemone"
 export SYSTEMONE_MODEL="kev:latest"
+# 認証が必要なエンドポイント（クラウドやプロキシ経由など）を利用する場合
+export SYSTEMONE_API_KEY="your-systemone-api-key"
 ```
 
 ---
