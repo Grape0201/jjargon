@@ -73,9 +73,7 @@ def test_cli_analyze_and_list_and_export_sudachi(tmp_path: Path) -> None:
     assert rows[1][12] == "Kintone"  # aliasも正規化表記はKintoneに統一される
 
 
-def test_cli_extract_mode_missing_systemone_error(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_cli_extract_mode_missing_systemone_error(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("SYSTEMONE_MODEL", raising=False)
     monkeypatch.delenv("SYSTEMONE_URL", raising=False)
 
@@ -83,7 +81,8 @@ def test_cli_extract_mode_missing_systemone_error(
     sample_txt.write_text("テストテキスト", encoding="utf-8")
 
     # system-one-only モードで環境変数/引数なしの場合に終了コード1でエラーになること
-    result = runner.invoke(app, ["extract", str(sample_txt), "--mode", "system-one-only"])
+    result = runner.invoke(
+        app, ["extract", str(sample_txt), "--mode", "system-one-only"]
+    )
     assert result.exit_code == 1
     assert "System One モデルが指定されていません" in result.stdout
-

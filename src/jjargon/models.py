@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 import unicodedata
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def utc_now() -> datetime:
@@ -229,7 +230,8 @@ class CompactExtractionProposal(BaseModel):
         description="用語種別（technical_term, business_term, system, product, acronym, organization, workflow）",
     )
     meaning: str = Field(
-        default="", description="1文以内の簡潔な用語の意味・定義（update_existingの場合は空文字可）"
+        default="",
+        description="1文以内の簡潔な用語の意味・定義（update_existingの場合は空文字可）",
     )
 
     def to_candidate_proposal(self) -> CandidateProposal:
@@ -319,7 +321,9 @@ def enrich_proposals_from_sudachi(
 
             # Sudachi候補に無かった場合は文リストから部分一致で抜粋
             if not collected_examples and sentences:
-                norm_forms = [normalize_key(f) for f in search_forms if normalize_key(f)]
+                norm_forms = [
+                    normalize_key(f) for f in search_forms if normalize_key(f)
+                ]
                 for sent in sentences:
                     norm_sent = normalize_key(sent)
                     if (
@@ -542,3 +546,92 @@ class Glossary(BaseModel):
         )
         self.terms.append(new_term)
         return new_term, "added"
+
+
+class LLMConfig(BaseModel):
+    """System Two (生成LLM) の設定構造体 (base / key / model を集約)"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    model: str = "gpt-4o-mini"
+    api_base: str | None = Field(default=None, alias="base")
+    api_key: str = Field(default="not-needed", alias="key")
+    compact_mode: bool = False
+    disable_thinking: bool | None = None
+    max_glossary_terms: int = 50
+
+    @property
+    def base(self) -> str | None:
+        return self.api_base
+
+    @property
+    def key(self) -> str:
+        return self.api_key
+
+    @classmethod
+    def from_env(
+        cls,
+        model: str | None = None,
+        api_base: str | None = None,
+        api_key: str | None = None,
+        compact_mode: bool = False,
+        disable_thinking: bool | None = None,
+        max_glossary_terms: int = 50,
+        **kwargs: Any,
+    ) -> LLMConfig:
+        return cls(
+            model=model or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini",
+            api_base=api_base or os.environ.get("OPENAI_BASE_URL"),
+            api_key=api_key or os.environ.get("OPENAI_API_KEY") or "not-needed",
+            compact_mode=compact_mode,
+            disable_thinking=compact_mode
+            if disable_thinking is None
+            else disable_thinking,
+            max_glossary_terms=max_glossary_terms,
+            **kwargs,
+        )
+
+
+class SystemOneConfig(BaseModel):
+    """System One (意思決定モデル) の設定構造体"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    model: str | None = None
+    url: str | None = Field(default=None, alias="base_url")
+    threshold: float = 0.75
+    batch_size: int = 16
+    timeout: float = 60.0
+
+    @property
+    def base_url(self) -> str | None:
+        return self.url
+
+    @classmethod
+    def from_env(
+        cls,
+        model: str | None = None,
+        url: str | None = None,
+        threshold: float = 0.75,
+        batch_size: int = 16,
+        timeout: float = 60.0,
+        **kwargs: Any,
+    ) -> SystemOneConfig:
+        resolved_model = model or os.environ.get("SYSTEMONE_MODEL")
+        if not resolved_model:
+            raise ValueError(
+                "System One モデルが指定されていません。環境変数 SYSTEMONE_MODEL または --systemone-model オプションで指定してください。"
+            )
+        resolved_url = url or os.environ.get("SYSTEMONE_URL")
+        if not resolved_url:
+            raise ValueError(
+                "System One エンドポイントURLが指定されていません。環境変数 SYSTEMONE_URL または --systemone-url オプションで指定してください。"
+            )
+        return cls(
+            model=resolved_model,
+            url=resolved_url,
+            threshold=threshold,
+            batch_size=batch_size,
+            timeout=timeout,
+            **kwargs,
+        )

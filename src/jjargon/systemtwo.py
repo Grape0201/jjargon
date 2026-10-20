@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 
 from openai import BadRequestError, OpenAI
 
@@ -9,6 +8,7 @@ from jjargon.models import (
     CompactExtractionResponse,
     ExtractionResponse,
     Glossary,
+    LLMConfig,
     SudachiCandidate,
     Term,
     TermStatus,
@@ -232,6 +232,8 @@ class SystemTwoClient:
 
     def __init__(
         self,
+        config: LLMConfig | None = None,
+        *,
         model: str | None = None,
         api_base: str | None = None,
         api_key: str | None = None,
@@ -239,14 +241,23 @@ class SystemTwoClient:
         disable_thinking: bool = True,
         max_glossary_terms: int = 50,
     ) -> None:
-        self.model = model or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
-        self.api_base = api_base or os.environ.get("OPENAI_BASE_URL")
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or "not-needed"
-        self.client = OpenAI(base_url=self.api_base, api_key=self.api_key)
-        self.compact_mode = compact_mode
-        self.disable_thinking = disable_thinking
-        self.max_glossary_terms = max_glossary_terms
+        if config is not None:
+            self.config = config
+        else:
+            self.config = LLMConfig.from_env(
+                model=model,
+                api_base=api_base,
+                api_key=api_key,
+                compact_mode=compact_mode,
+                disable_thinking=disable_thinking,
+                max_glossary_terms=max_glossary_terms,
+            )
+        self.client = OpenAI(base_url=self.config.api_base, api_key=self.config.api_key)
         self.call_count = 0
+
+    @classmethod
+    def from_config(cls, config: LLMConfig) -> SystemTwoClient:
+        return cls(config=config)
 
     @classmethod
     def from_env(
@@ -259,13 +270,39 @@ class SystemTwoClient:
         max_glossary_terms: int = 50,
     ) -> SystemTwoClient:
         return cls(
-            model=model,
-            api_base=api_base,
-            api_key=api_key,
-            compact_mode=compact_mode,
-            disable_thinking=disable_thinking,
-            max_glossary_terms=max_glossary_terms,
+            config=LLMConfig.from_env(
+                model=model,
+                api_base=api_base,
+                api_key=api_key,
+                compact_mode=compact_mode,
+                disable_thinking=disable_thinking,
+                max_glossary_terms=max_glossary_terms,
+            )
         )
+
+    @property
+    def model(self) -> str:
+        return self.config.model
+
+    @property
+    def api_base(self) -> str | None:
+        return self.config.api_base
+
+    @property
+    def api_key(self) -> str:
+        return self.config.api_key
+
+    @property
+    def compact_mode(self) -> bool:
+        return self.config.compact_mode
+
+    @property
+    def disable_thinking(self) -> bool:
+        return bool(self.config.disable_thinking)
+
+    @property
+    def max_glossary_terms(self) -> int:
+        return self.config.max_glossary_terms
 
     def extract_candidates(
         self,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.request
 from typing import Any
 
@@ -10,6 +9,7 @@ from jjargon.models import (
     ExtractionResponse,
     Glossary,
     SudachiCandidate,
+    SystemOneConfig,
     Term,
     TermStatus,
     normalize_key,
@@ -45,9 +45,7 @@ def _is_candidate_related_to_term(cand: SudachiCandidate, term: Term) -> bool:
             shorter, longer = (
                 (norm_surf, nf) if len(norm_surf) <= len(nf) else (nf, norm_surf)
             )
-            if any(
-                shorter[i : i + 2] in longer for i in range(len(shorter) - 1)
-            ):
+            if any(shorter[i : i + 2] in longer for i in range(len(shorter) - 1)):
                 return True
     return False
 
@@ -121,28 +119,29 @@ class SystemOneClient:
 
     def __init__(
         self,
+        config: SystemOneConfig | None = None,
+        *,
         model: str | None = None,
         url: str | None = None,
         threshold: float = 0.75,
         batch_size: int = 16,
         timeout: float = 60.0,
     ) -> None:
-        resolved_model = model or os.environ.get("SYSTEMONE_MODEL")
-        if not resolved_model:
-            raise ValueError(
-                "System One モデルが指定されていません。環境変数 SYSTEMONE_MODEL または --systemone-model オプションで指定してください。"
+        if config is not None:
+            self.config = config
+        else:
+            self.config = SystemOneConfig.from_env(
+                model=model,
+                url=url,
+                threshold=threshold,
+                batch_size=batch_size,
+                timeout=timeout,
             )
-        resolved_url = url or os.environ.get("SYSTEMONE_URL")
-        if not resolved_url:
-            raise ValueError(
-                "System One エンドポイントURLが指定されていません。環境変数 SYSTEMONE_URL または --systemone-url オプションで指定してください。"
-            )
-        self.model = resolved_model
-        self.url = resolved_url
-        self.threshold = threshold
-        self.batch_size = max(1, batch_size)
-        self.timeout = timeout
         self.call_count = 0
+
+    @classmethod
+    def from_config(cls, config: SystemOneConfig) -> SystemOneClient:
+        return cls(config=config)
 
     @classmethod
     def from_env(
@@ -154,16 +153,36 @@ class SystemOneClient:
         timeout: float = 60.0,
     ) -> SystemOneClient:
         return cls(
-            model=model,
-            url=url,
-            threshold=threshold,
-            batch_size=batch_size,
-            timeout=timeout,
+            config=SystemOneConfig.from_env(
+                model=model,
+                url=url,
+                threshold=threshold,
+                batch_size=batch_size,
+                timeout=timeout,
+            )
         )
 
-    def call(
-        self, state: dict[str, Any], questions: dict[str, Any]
-    ) -> dict[str, Any]:
+    @property
+    def model(self) -> str:
+        return self.config.model or ""
+
+    @property
+    def url(self) -> str:
+        return self.config.url or ""
+
+    @property
+    def threshold(self) -> float:
+        return self.config.threshold
+
+    @property
+    def batch_size(self) -> int:
+        return self.config.batch_size
+
+    @property
+    def timeout(self) -> float:
+        return self.config.timeout
+
+    def call(self, state: dict[str, Any], questions: dict[str, Any]) -> dict[str, Any]:
         """/v1/systemone エンドポイントを呼び出して answers 辞書を返す"""
         if not questions:
             return {}
@@ -238,7 +257,9 @@ class SystemOneClient:
             for i, cand in enumerate(batch):
                 cid = f"c{i}"
                 ans = answers.get(f"{cid}_is_jargon", {})
-                noul_score = float(ans.get("noul", 0.0)) if isinstance(ans, dict) else 0.0
+                noul_score = (
+                    float(ans.get("noul", 0.0)) if isinstance(ans, dict) else 0.0
+                )
                 scores[cand.surface] = noul_score
                 if noul_score >= self.threshold:
                     filtered.append(cand)
@@ -287,7 +308,9 @@ class SystemOneClient:
                     "yomi": t.yomi,
                 }
             )
-        existing_criteria["new_term"] = "既存用語のいずれにも該当しない新規の専門用語である"
+        existing_criteria["new_term"] = (
+            "既存用語のいずれにも該当しない新規の専門用語である"
+        )
 
         proposals: list[CandidateProposal] = []
 

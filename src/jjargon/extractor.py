@@ -9,7 +9,9 @@ from jjargon.models import (
     CandidateProposal,
     ExtractionResponse,
     Glossary,
+    LLMConfig,
     SudachiCandidate,
+    SystemOneConfig,
     Term,
     enrich_proposals_from_sudachi,
 )
@@ -28,7 +30,9 @@ __all__ = [
     "SYSTEM_PROMPT",
     "ExtractionMode",
     "JargonExtractor",
+    "LLMConfig",
     "SystemOneClient",
+    "SystemOneConfig",
     "SystemTwoClient",
     "build_user_prompt",
     "select_relevant_denied_surfaces",
@@ -40,7 +44,9 @@ class ExtractionMode(StrEnum):
     """専門用語抽出パイプラインの実行モード"""
 
     HYBRID = "hybrid"  # System 1 でトリアージ・候補絞り込み -> System 2 で生成抽出
-    SYSTEM_ONE_ONLY = "system-one-only"  # System 1 のみで判定・分類抽出 (LLM生成不使用・最速)
+    SYSTEM_ONE_ONLY = (
+        "system-one-only"  # System 1 のみで判定・分類抽出 (LLM生成不使用・最速)
+    )
     SYSTEM_TWO_ONLY = "system-two-only"  # System 2 のみで生成抽出 (System 1 不使用)
 
     @classmethod
@@ -60,80 +66,40 @@ class ExtractionMode(StrEnum):
 
 class JargonExtractor:
     """
-    Sudachi形態素解析、System One (判定・分類モデル)、および System Two (生成LLM) を
-    対等なコンポーネントとして統合し、指定された ExtractionMode に従って専門用語を抽出するオーケストレーター。
+    Sudachi形態素解析、System One (判定・分類モデル)、および System Two (生成LLM) を統合し、
+    指定された ExtractionMode に従って専門用語を抽出するオーケストレーター。
     """
 
     def __init__(
         self,
         mode: ExtractionMode | str = ExtractionMode.HYBRID,
-        system_two: SystemTwoClient | None = None,
-        system_one: SystemOneClient | None = None,
-        max_chunk_chars: int = 4000,
-        analyzer: SudachiAnalyzer | None = None,
-        # 互換性および簡易フラット指定用引数
-        model: str | None = None,
-        api_base: str | None = None,
-        api_key: str | None = None,
-        compact_mode: bool = False,
-        disable_thinking: bool | None = None,
-        max_glossary_terms: int = 50,
-        systemone_model: str | None = None,
-        systemone_url: str | None = None,
-        systemone_threshold: float = 0.75,
-        # 従来のブールフラグエイリアス
-        systemone_only: bool = False,
-        use_systemone: bool | None = None,
-        systemone_client: SystemOneClient | None = None,
+        llm_config: LLMConfig | None = None,
+        system_one_config: SystemOneConfig | None = None,
     ) -> None:
-        self.analyzer = analyzer or SudachiAnalyzer()
-        self.max_chunk_chars = max_chunk_chars
+        self.mode = ExtractionMode.from_str(mode)
+        self.analyzer = SudachiAnalyzer()
+        self.max_chunk_chars = 4000
 
-        # 1. 実行モードの解決
-        if systemone_only:
-            self.mode = ExtractionMode.SYSTEM_ONE_ONLY
-        elif use_systemone is False:
-            self.mode = ExtractionMode.SYSTEM_TWO_ONLY
-        else:
-            self.mode = ExtractionMode.from_str(mode)
-
-        # 2. System Two (生成LLM) クライアントの解決
+        # 1. System Two (生成LLM) クライアントの初期化
         if self.mode in (ExtractionMode.HYBRID, ExtractionMode.SYSTEM_TWO_ONLY):
-            if system_two is not None:
-                self.system_two: SystemTwoClient | None = system_two
-            else:
-                self.system_two = SystemTwoClient.from_env(
-                    model=model,
-                    api_base=api_base,
-                    api_key=api_key,
-                    compact_mode=compact_mode,
-                    disable_thinking=compact_mode if disable_thinking is None else disable_thinking,
-                    max_glossary_terms=max_glossary_terms,
-                )
+            self.system_two: SystemTwoClient | None = SystemTwoClient(config=llm_config)
         else:
             self.system_two = None
 
-        # 3. System One (意思決定モデル) クライアントの解決
+        # 2. System One (意思決定モデル) クライアントの初期化
         if self.mode in (ExtractionMode.HYBRID, ExtractionMode.SYSTEM_ONE_ONLY):
-            s1 = system_one or systemone_client
-            if s1 is not None:
-                self.system_one: SystemOneClient | None = s1
+            has_s1_input = bool(
+                system_one_config
+                or os.environ.get("SYSTEMONE_MODEL")
+                or os.environ.get("SYSTEMONE_URL")
+            )
+            if self.mode == ExtractionMode.SYSTEM_ONE_ONLY or has_s1_input:
+                self.system_one: SystemOneClient | None = SystemOneClient(
+                    config=system_one_config
+                )
             else:
-                env_s1_model = os.environ.get("SYSTEMONE_MODEL")
-                env_s1_url = os.environ.get("SYSTEMONE_URL")
-                has_s1_input = bool(systemone_model or systemone_url or env_s1_model or env_s1_url)
-
-                if self.mode == ExtractionMode.SYSTEM_ONE_ONLY or use_systemone is True or has_s1_input:
-                    # 明示的な指定または環境変数がある場合は初期化（不足時はSystemOneClientがValueErrorを送出）
-                    self.system_one = SystemOneClient.from_env(
-                        model=systemone_model,
-                        url=systemone_url,
-                        threshold=systemone_threshold,
-                    )
-                else:
-                    # HYBRID 指定だが System 1 の設定が一切無い場合は、安全に System Two Only として動作
-                    self.system_one = None
-                    self.mode = ExtractionMode.SYSTEM_TWO_ONLY
+                self.system_one = None
+                self.mode = ExtractionMode.SYSTEM_TWO_ONLY
         else:
             self.system_one = None
 
@@ -146,38 +112,17 @@ class JargonExtractor:
             "candidates_filtered": 0,
         }
 
-    # 後方互換性プロパティ
-    @property
-    def model(self) -> str:
-        return self.system_two.model if self.system_two else ""
-
-    @property
-    def api_base(self) -> str | None:
-        return self.system_two.api_base if self.system_two else None
-
-    @property
-    def api_key(self) -> str:
-        return self.system_two.api_key if self.system_two else ""
-
     @property
     def client(self):
         return self.system_two.client if self.system_two else None
 
     @property
+    def model(self) -> str:
+        return self.system_two.model if self.system_two else ""
+
+    @property
     def compact_mode(self) -> bool:
         return self.system_two.compact_mode if self.system_two else False
-
-    @property
-    def max_glossary_terms(self) -> int:
-        return self.system_two.max_glossary_terms if self.system_two else 50
-
-    @property
-    def systemone_client(self) -> SystemOneClient | None:
-        return self.system_one
-
-    @property
-    def systemone_only(self) -> bool:
-        return self.mode == ExtractionMode.SYSTEM_ONE_ONLY
 
     def extract_candidates(
         self,
@@ -230,8 +175,12 @@ class JargonExtractor:
         domain: str | None = None,
         include_compounds: bool = True,
         on_progress: Callable[[int, int], None] | None = None,
+        mode: ExtractionMode | str | None = None,
     ) -> tuple[list[CandidateProposal], dict[str, list[Term]]]:
-        """テキスト全体をチャンク分割し、現在のモードに従って用語集へマージする"""
+        """テキスト全体をチャンク分割し、指定（またはデフォルト）のモードに従って用語集へマージする"""
+        effective_mode = (
+            ExtractionMode.from_str(mode) if mode is not None else self.mode
+        )
         chunks = self.chunk_text(text)
         total_chunks = len(chunks)
         self.last_stats = {
@@ -272,8 +221,11 @@ class JargonExtractor:
             # -------------------------------------------------------------
             # モード 1: SYSTEM_ONE_ONLY (生成LLM不使用・最速)
             # -------------------------------------------------------------
-            if self.mode == ExtractionMode.SYSTEM_ONE_ONLY:
-                assert self.system_one is not None
+            if effective_mode == ExtractionMode.SYSTEM_ONE_ONLY:
+                if self.system_one is None:
+                    raise RuntimeError(
+                        f"モード {effective_mode} の実行には System One クライアントが必要です。"
+                    )
                 active_cands, scores = self.system_one.filter_candidates(
                     text_chunk=chunk,
                     candidates=sudachi_candidates,
@@ -286,11 +238,14 @@ class JargonExtractor:
                 if not active_cands:
                     self.last_stats["skipped_chunks"] += 1
                 else:
+                    max_terms = (
+                        self.system_two.max_glossary_terms if self.system_two else 50
+                    )
                     relevant_terms = select_relevant_terms(
                         text_chunk=chunk,
                         sudachi_candidates=active_cands,
                         glossary=glossary,
-                        max_terms=self.max_glossary_terms,
+                        max_terms=max_terms,
                     )
                     response = self.system_one.classify_candidates(
                         text_chunk=chunk,
@@ -312,8 +267,11 @@ class JargonExtractor:
             # -------------------------------------------------------------
             # モード 2: SYSTEM_TWO_ONLY (LLM生成単体)
             # -------------------------------------------------------------
-            elif self.mode == ExtractionMode.SYSTEM_TWO_ONLY:
-                assert self.system_two is not None
+            elif effective_mode == ExtractionMode.SYSTEM_TWO_ONLY:
+                if self.system_two is None:
+                    raise RuntimeError(
+                        f"モード {effective_mode} の実行には System Two クライアントが必要です。"
+                    )
                 active_cands = sudachi_candidates
                 if self.system_two.compact_mode:
                     active_cands = prefilter_sudachi_candidates(
@@ -339,9 +297,11 @@ class JargonExtractor:
             # -------------------------------------------------------------
             # モード 3: HYBRID (System 1 でフィルタ/スキップ -> System 2 で生成)
             # -------------------------------------------------------------
-            elif self.mode == ExtractionMode.HYBRID:
-                assert self.system_one is not None
-                assert self.system_two is not None
+            elif effective_mode == ExtractionMode.HYBRID:
+                if self.system_one is None or self.system_two is None:
+                    raise RuntimeError(
+                        f"モード {effective_mode} の実行には System One と System Two の両クライアントが必要です。"
+                    )
                 active_cands, _ = self.system_one.filter_candidates(
                     text_chunk=chunk,
                     candidates=sudachi_candidates,

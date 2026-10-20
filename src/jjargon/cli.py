@@ -15,7 +15,12 @@ from rich.progress import (
 from rich.table import Table
 
 from jjargon.analyzer import SudachiAnalyzer
-from jjargon.extractor import ExtractionMode, JargonExtractor
+from jjargon.extractor import (
+    ExtractionMode,
+    JargonExtractor,
+    LLMConfig,
+    SystemOneConfig,
+)
 from jjargon.models import TermStatus
 from jjargon.reviewer import interactive_review
 from jjargon.storage import load_glossary, save_glossary
@@ -194,16 +199,27 @@ def extract_cmd(
     text = input_file.read_text(encoding="utf-8")
     glossary = load_glossary(glossary_path)
 
+    llm_config = LLMConfig.from_env(
+        model=model,
+        api_base=api_base,
+        api_key=api_key,
+        compact_mode=compact,
+    )
+    s1_config = (
+        SystemOneConfig(
+            model=systemone_model,
+            url=systemone_url,
+            threshold=systemone_threshold,
+        )
+        if (systemone_model or systemone_url)
+        else None
+    )
+
     try:
         extractor = JargonExtractor(
             mode=mode,
-            model=model,
-            api_base=api_base,
-            api_key=api_key,
-            compact_mode=compact,
-            systemone_model=systemone_model,
-            systemone_url=systemone_url,
-            systemone_threshold=systemone_threshold,
+            llm_config=llm_config,
+            system_one_config=s1_config,
         )
     except ValueError as e:
         console.print(f"[red]エラー: {e}[/red]")

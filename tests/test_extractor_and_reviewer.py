@@ -3,7 +3,14 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
-from jjargon.extractor import ExtractionMode, JargonExtractor, build_user_prompt
+from jjargon.extractor import (
+    ExtractionMode,
+    JargonExtractor,
+    LLMConfig,
+    SystemOneClient,
+    SystemOneConfig,
+    build_user_prompt,
+)
 from jjargon.models import (
     CandidateProposal,
     CompactExtractionProposal,
@@ -17,7 +24,6 @@ from jjargon.models import (
     TextExtractionResponse,
 )
 from jjargon.reviewer import interactive_review
-from jjargon.systemone import SystemOneClient
 
 
 def test_jargon_extractor_pipeline_and_interactive_review(monkeypatch) -> None:
@@ -128,7 +134,9 @@ def test_jargon_extractor_pipeline_and_interactive_review(monkeypatch) -> None:
 
 
 def test_jargon_extractor_extract_candidates(monkeypatch) -> None:
-    extractor = JargonExtractor(model="gpt-4o-mini", api_key="test-key")
+    extractor = JargonExtractor(
+        llm_config=LLMConfig(model="gpt-4o-mini", api_key="test-key")
+    )
     mock_llm_response = TextExtractionResponse(
         proposals=[
             TextExtractionProposal(
@@ -159,7 +167,9 @@ def test_jargon_extractor_extract_candidates(monkeypatch) -> None:
 
 
 def test_jargon_extractor_extract_candidates_raises_on_none(monkeypatch) -> None:
-    extractor = JargonExtractor(model="gpt-4o-mini", api_key="test-key")
+    extractor = JargonExtractor(
+        llm_config=LLMConfig(model="gpt-4o-mini", api_key="test-key")
+    )
     mock_choice = MagicMock()
     mock_choice.message.parsed = None
     mock_choice.message.content = "invalid response"
@@ -180,40 +190,42 @@ def test_jargon_extractor_extract_candidates_raises_on_none(monkeypatch) -> None
         )
 
 
-def test_jargon_extractor_defaults(monkeypatch) -> None:
+def test_llm_config_defaults(monkeypatch) -> None:
     for var in ["OPENAI_MODEL", "OPENAI_BASE_URL", "OPENAI_API_KEY"]:
         monkeypatch.delenv(var, raising=False)
 
-    extractor = JargonExtractor()
-    assert extractor.model == "gpt-4o-mini"
-    assert extractor.api_base is None
-    assert extractor.api_key == "not-needed"
+    config = LLMConfig.from_env()
+    assert config.model == "gpt-4o-mini"
+    assert config.api_base is None
+    assert config.base is None
+    assert config.api_key == "not-needed"
+    assert config.key == "not-needed"
 
 
-def test_jargon_extractor_env_vars(monkeypatch) -> None:
+def test_llm_config_env_vars(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "env-secret-key")
     monkeypatch.setenv("OPENAI_MODEL", "my-custom-model")
 
-    extractor = JargonExtractor()
-    assert extractor.model == "my-custom-model"
-    assert extractor.api_base == "https://api.example.com/v1"
-    assert extractor.api_key == "env-secret-key"
+    config = LLMConfig.from_env()
+    assert config.model == "my-custom-model"
+    assert config.api_base == "https://api.example.com/v1"
+    assert config.base == "https://api.example.com/v1"
+    assert config.api_key == "env-secret-key"
+    assert config.key == "env-secret-key"
 
 
-def test_jargon_extractor_args_override_env(monkeypatch) -> None:
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.env.com/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
-    monkeypatch.setenv("OPENAI_MODEL", "env-model")
-
-    extractor = JargonExtractor(
+def test_llm_config_explicit_base_key_model() -> None:
+    config = LLMConfig(
         model="gpt-4o",
-        api_base="https://api.override.com",
-        api_key="arg-key",
+        base="https://api.override.com",
+        key="arg-key",
     )
-    assert extractor.model == "gpt-4o"
-    assert extractor.api_base == "https://api.override.com"
-    assert extractor.api_key == "arg-key"
+    assert config.model == "gpt-4o"
+    assert config.api_base == "https://api.override.com"
+    assert config.base == "https://api.override.com"
+    assert config.api_key == "arg-key"
+    assert config.key == "arg-key"
 
 
 def test_build_user_prompt_filters_irrelevant_glossary_terms() -> None:
@@ -311,7 +323,8 @@ def test_build_user_prompt_respects_max_glossary_terms() -> None:
 
 
 def test_extract_and_merge_on_progress_callback(monkeypatch) -> None:
-    extractor = JargonExtractor(max_chunk_chars=20)
+    extractor = JargonExtractor()
+    extractor.max_chunk_chars = 20
     monkeypatch.setattr(
         extractor,
         "extract_candidates",
@@ -331,7 +344,7 @@ def test_extract_and_merge_on_progress_callback(monkeypatch) -> None:
 
 def test_compact_mode_enriches_yomi_and_examples_from_sudachi(monkeypatch) -> None:
     extractor = JargonExtractor(
-        model="gpt-4o-mini", api_key="test-key", compact_mode=True
+        llm_config=LLMConfig(model="gpt-4o-mini", api_key="test-key", compact_mode=True)
     )
     mock_llm_response = CompactExtractionResponse(
         proposals=[
@@ -381,12 +394,21 @@ def test_compact_mode_enriches_yomi_and_examples_from_sudachi(monkeypatch) -> No
 
 
 def test_systemone_hybrid_filter_and_chunk_skip(monkeypatch) -> None:
-    s1_client = SystemOneClient(
+    s1_config = SystemOneConfig(
         model="kev:latest", url="http://localhost:11434/v1/systemone", threshold=0.5
     )
 
+    extractor = JargonExtractor(
+        mode=ExtractionMode.HYBRID,
+        llm_config=LLMConfig(compact_mode=True),
+        system_one_config=s1_config,
+    )
+    extractor.max_chunk_chars = 30
+    assert extractor.system_one is not None
+
     def fake_s1_call(state: dict, questions: dict) -> dict:
-        s1_client.call_count += 1
+        assert extractor.system_one is not None
+        extractor.system_one.call_count += 1
         cands = state.get("candidates", {})
         answers = {}
         for cid, cinfo in cands.items():
@@ -395,13 +417,7 @@ def test_systemone_hybrid_filter_and_chunk_skip(monkeypatch) -> None:
             answers[f"{cid}_is_jargon"] = {"type": "noul", "noul": score}
         return answers
 
-    monkeypatch.setattr(s1_client, "call", fake_s1_call)
-
-    extractor = JargonExtractor(
-        max_chunk_chars=30,
-        compact_mode=True,
-        systemone_client=s1_client,
-    )
+    monkeypatch.setattr(extractor.system_one, "call", fake_s1_call)
 
     llm_called_chunks: list[str] = []
 
@@ -426,7 +442,9 @@ def test_systemone_hybrid_filter_and_chunk_skip(monkeypatch) -> None:
     monkeypatch.setattr(extractor, "extract_candidates", fake_extract_candidates)
 
     # チャンク1は専門用語あり、チャンク2は一般語（「確認作業」）のみ
-    text = "来期予算は傾斜配分マトリクスで算出します。\n画面での確認作業を完了しました。"
+    text = (
+        "来期予算は傾斜配分マトリクスで算出します。\n画面での確認作業を完了しました。"
+    )
     proposals, summary = extractor.extract_and_merge(
         text=text,
         glossary=Glossary(),
@@ -444,12 +462,18 @@ def test_systemone_hybrid_filter_and_chunk_skip(monkeypatch) -> None:
 
 
 def test_systemone_only_mode_extracts_and_merges_without_llm(monkeypatch) -> None:
-    s1_client = SystemOneClient(
+    s1_config = SystemOneConfig(
         model="kev:latest", url="http://localhost:11434/v1/systemone", threshold=0.5
     )
+    extractor = JargonExtractor(
+        mode=ExtractionMode.SYSTEM_ONE_ONLY,
+        system_one_config=s1_config,
+    )
+    assert extractor.system_one is not None
 
     def fake_s1_call(state: dict, questions: dict) -> dict:
-        s1_client.call_count += 1
+        assert extractor.system_one is not None
+        extractor.system_one.call_count += 1
         cands = state.get("candidates", {})
         answers = {}
         for qkey in questions:
@@ -467,7 +491,7 @@ def test_systemone_only_mode_extracts_and_merges_without_llm(monkeypatch) -> Non
                 answers[qkey] = {"type": "choice", "choice": choice}
         return answers
 
-    monkeypatch.setattr(s1_client, "call", fake_s1_call)
+    monkeypatch.setattr(extractor.system_one, "call", fake_s1_call)
 
     glossary = Glossary(
         terms=[
@@ -477,11 +501,6 @@ def test_systemone_only_mode_extracts_and_merges_without_llm(monkeypatch) -> Non
                 status=TermStatus.APPROVED,
             )
         ]
-    )
-
-    extractor = JargonExtractor(
-        mode=ExtractionMode.SYSTEM_ONE_ONLY,
-        system_one=s1_client,
     )
 
     text = "来期予算は傾斜マトリクスで算出し、年末調整はSmartHRで行います。"
@@ -512,54 +531,87 @@ def test_systemone_client_missing_config_raises_error(monkeypatch) -> None:
     with pytest.raises(ValueError, match="System One モデルが指定されていません"):
         SystemOneClient(model=None, url="http://localhost:11434/v1/systemone")
 
-    with pytest.raises(ValueError, match="System One エンドポイントURLが指定されていません"):
+    with pytest.raises(
+        ValueError, match="System One エンドポイントURLが指定されていません"
+    ):
         SystemOneClient(model="kev:latest", url=None)
 
     with pytest.raises(ValueError, match="System One モデルが指定されていません"):
         JargonExtractor(mode=ExtractionMode.SYSTEM_ONE_ONLY)
 
-    with pytest.raises(ValueError, match="System One モデルが指定されていません"):
-        JargonExtractor(systemone_only=True)
+
+def test_system_one_config_struct() -> None:
+    config = SystemOneConfig(
+        model="kev:v2",
+        base_url="http://localhost:11434/v1/systemone",
+        threshold=0.8,
+    )
+    assert config.model == "kev:v2"
+    assert config.url == "http://localhost:11434/v1/systemone"
+    assert config.base_url == "http://localhost:11434/v1/systemone"
+    assert config.threshold == 0.8
+
+
+def test_extract_and_merge_mode_override(monkeypatch) -> None:
+    s1_config = SystemOneConfig(
+        model="kev:latest", url="http://localhost:11434/v1/systemone", threshold=0.5
+    )
+    llm_config = LLMConfig(model="gpt-4o-mini", api_key="test-key")
+
+    # extractor は HYBRID で初期化
+    extractor = JargonExtractor(
+        mode=ExtractionMode.HYBRID,
+        llm_config=llm_config,
+        system_one_config=s1_config,
+    )
+
+    # extract_and_merge 呼び出し時に SYSTEM_TWO_ONLY を指定してオーバーライド
+    monkeypatch.setattr(
+        extractor,
+        "extract_candidates",
+        lambda *args, **kwargs: ExtractionResponse(proposals=[]),
+    )
+
+    _proposals, _summary = extractor.extract_and_merge(
+        text="テストテキストです。",
+        glossary=Glossary(),
+        mode=ExtractionMode.SYSTEM_TWO_ONLY,
+    )
+    assert extractor.last_stats["llm_calls"] == 1
+    assert extractor.last_stats["systemone_calls"] == 0
 
 
 def test_jargon_extractor_symmetric_components() -> None:
-    from jjargon.extractor import ExtractionMode
-    from jjargon.systemtwo import SystemTwoClient
-
-    s1 = SystemOneClient(
+    s1_config = SystemOneConfig(
         model="kev:latest", url="http://localhost:11434/v1/systemone", threshold=0.6
     )
-    s2 = SystemTwoClient(model="gpt-4o-mini", api_key="test-key", compact_mode=True)
+    llm_config = LLMConfig(model="gpt-4o-mini", api_key="test-key", compact_mode=True)
 
-    # 1. 対等なコンポーネントを渡して HYBRID モード初期化
+    # 1. HYBRID モード初期化: 両クライアントが初期化されること
     extractor_hybrid = JargonExtractor(
         mode=ExtractionMode.HYBRID,
-        system_one=s1,
-        system_two=s2,
+        llm_config=llm_config,
+        system_one_config=s1_config,
     )
     assert extractor_hybrid.mode == ExtractionMode.HYBRID
-    assert extractor_hybrid.system_one is s1
-    assert extractor_hybrid.system_two is s2
+    assert extractor_hybrid.system_one is not None
+    assert extractor_hybrid.system_two is not None
     assert extractor_hybrid.compact_mode is True
 
-    # 2. SYSTEM_ONE_ONLY モード
+    # 2. SYSTEM_ONE_ONLY モード: System One のみ初期化されること
     extractor_s1 = JargonExtractor(
         mode=ExtractionMode.SYSTEM_ONE_ONLY,
-        system_one=s1,
+        system_one_config=s1_config,
     )
     assert extractor_s1.mode == ExtractionMode.SYSTEM_ONE_ONLY
-    assert extractor_s1.system_one is s1
+    assert extractor_s1.system_one is not None
     assert extractor_s1.system_two is None
 
-    # 3. SYSTEM_TWO_ONLY モード
+    # 3. SYSTEM_TWO_ONLY モード: System Two のみ初期化されること
     extractor_s2 = JargonExtractor(
         mode=ExtractionMode.SYSTEM_TWO_ONLY,
-        system_two=s2,
+        llm_config=llm_config,
     )
     assert extractor_s2.mode == ExtractionMode.SYSTEM_TWO_ONLY
     assert extractor_s2.system_one is None
-    assert extractor_s2.system_two is s2
-
-
-
-
+    assert extractor_s2.system_two is not None

@@ -1,12 +1,14 @@
 from jjargon.analyzer import SudachiAnalyzer
 from jjargon.cli import app
-from jjargon.extractor import JargonExtractor
+from jjargon.extractor import ExtractionMode, JargonExtractor
 from jjargon.models import (
     CandidateProposal,
     ExtractionResponse,
     Glossary,
+    LLMConfig,
     PendingUpdate,
     SudachiCandidate,
+    SystemOneConfig,
     Term,
     TermStatus,
     TextExtractionProposal,
@@ -17,12 +19,15 @@ from jjargon.sudachi_dict import export_sudachi_csv, generate_sudachi_csv
 
 __all__ = [
     "CandidateProposal",
+    "ExtractionMode",
     "ExtractionResponse",
     "Glossary",
     "JargonExtractor",
+    "LLMConfig",
     "PendingUpdate",
     "SudachiAnalyzer",
     "SudachiCandidate",
+    "SystemOneConfig",
     "Term",
     "TermStatus",
     "TextExtractionProposal",
