@@ -37,6 +37,10 @@ export OPENAI_API_KEY="sk-..."
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_BASE_URL="http://localhost:11434/v1"
 export OPENAI_MODEL="qwen2.5:14b"
+
+# System One モデル（Ollama /v1/systemone, kev:latest 等）を併用する場合
+export SYSTEMONE_URL="http://localhost:11434/v1/systemone"
+export SYSTEMONE_MODEL="kev:latest"
 ```
 
 ---
@@ -52,11 +56,17 @@ uv run jjargon analyze sample.txt
 ### 2. テキストから専門用語・誤認識候補を抽出して用語集に保存する（Step 1〜3）
 
 ```bash
-# 環境変数またはオプションでモデルを指定
+# 標準高速抽出（極小スキーマ --compact ＋ Sudachiの読み・例文自動補完）
 uv run jjargon extract sample.txt --glossary glossary.yaml --domain "情報システム部"
 
-# モデルやBase URLを直接指定する場合
-uv run jjargon extract sample.txt -g glossary.yaml -m gpt-4o-mini --review
+# 従来の全フィールドLLM出力スキーマを使う場合
+uv run jjargon extract sample.txt -g glossary.yaml --full-schema
+
+# ハイブリッドモード: System One モデル (kev:latest) でSudachi候補を事前フィルタ＆チャンクスキップし、残りをLLMで抽出（環境変数またはオプションで指定）
+uv run jjargon extract sample.txt -g glossary.yaml --systemone-model kev:latest --systemone-url http://localhost:11434/v1/systemone
+
+# System One 完結モード: 生成LLMを一切使わず、Sudachi + System One (noul / choice) のみで超高速抽出
+uv run jjargon extract sample.txt -g glossary.yaml --systemone-model kev:latest --systemone-url http://localhost:11434/v1/systemone --systemone-only
 ```
 
 ### 3. 抽出された候補を人間がレビューして承認・編集・却下する（Step 4）

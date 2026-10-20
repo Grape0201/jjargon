@@ -144,6 +144,48 @@ def extract_cmd(
             "--no-compounds", help="複合名詞の抽出を無効化し、OOVと文脈のみで抽出する"
         ),
     ] = False,
+    compact: Annotated[
+        bool,
+        typer.Option(
+            "--compact/--full-schema",
+            help="LLM出力スキーマを極小化し、読み(yomi)・例文(examples)をSudachiから自動補完して高速化する",
+        ),
+    ] = True,
+    systemone_model: Annotated[
+        str | None,
+        typer.Option(
+            "--systemone-model",
+            help="System One モデル名 (例: kev:latest / 環境変数 SYSTEMONE_MODEL も利用可能)",
+        ),
+    ] = None,
+    systemone_url: Annotated[
+        str | None,
+        typer.Option(
+            "--systemone-url",
+            help="System One API URL (例: http://localhost:11434/v1/systemone / 環境変数 SYSTEMONE_URL も利用可能)",
+        ),
+    ] = None,
+    systemone_threshold: Annotated[
+        float,
+        typer.Option(
+            "--systemone-threshold",
+            help="System One の noul (専門用語らしさ) 採用閾値 (0.0〜1.0)",
+        ),
+    ] = 0.75,
+    systemone_only: Annotated[
+        bool,
+        typer.Option(
+            "--systemone-only",
+            help="生成LLMを使用せず、Sudachi + System One のみで超高速抽出を行う",
+        ),
+    ] = False,
+    use_systemone: Annotated[
+        bool | None,
+        typer.Option(
+            "--use-systemone/--no-systemone",
+            help="System One による候補フィルタ・チャンクスキップの有効/無効を明示指定する",
+        ),
+    ] = None,
     review_now: Annotated[
         bool,
         typer.Option(
@@ -155,14 +197,40 @@ def extract_cmd(
     text = input_file.read_text(encoding="utf-8")
     glossary = load_glossary(glossary_path)
 
-    extractor = JargonExtractor(model=model, api_base=api_base, api_key=api_key)
+    try:
+        extractor = JargonExtractor(
+            model=model,
+            api_base=api_base,
+            api_key=api_key,
+            compact_mode=compact,
+            systemone_model=systemone_model,
+            systemone_url=systemone_url,
+            systemone_threshold=systemone_threshold,
+            systemone_only=systemone_only,
+            use_systemone=use_systemone,
+        )
+    except ValueError as e:
+        console.print(f"[red]エラー: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
     import time
 
     start_time = time.time()
+    s1_info = (
+        f" | System 1: [bold magenta]{extractor.system_one.model}[/bold magenta]"
+        + (f" (th={extractor.system_one.threshold})" if extractor.system_one else "")
+        if extractor.system_one
+        else " | System 1: なし"
+    )
+    s2_info = (
+        f"[bold]{extractor.system_two.model}[/bold] ({'compact' if compact else 'full'})"
+        if extractor.system_two
+        else "なし"
+    )
     console.print(
         f"[bold cyan]1. テキスト読み込み完了[/bold cyan] ({len(text)} 文字) | "
-        f"既存用語数: {len(glossary.terms)} 件 | モデル: [bold]{extractor.model}[/bold]"
+        f"既存用語数: {len(glossary.terms)} 件 | モード: [bold green]{extractor.mode}[/bold green] | "
+        f"LLM (System 2): {s2_info}{s1_info}"
     )
 
     with Progress(
@@ -170,12 +238,12 @@ def extract_cmd(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         MofNCompleteColumn(),
-        TextColumn("回 API呼び出し"),
+        TextColumn("チャンク"),
         TimeElapsedColumn(),
         console=console,
     ) as progress:
         task_id = progress.add_task(
-            f"[bold green]Sudachi解析 & AI専門用語抽出中[/bold green] [dim]({extractor.model})[/dim]",
+            "[bold green]Sudachi解析 & 専門用語抽出中[/bold green]",
             total=None,
         )
         _proposals, summary = extractor.extract_and_merge(
@@ -191,10 +259,22 @@ def extract_cmd(
     elapsed_time = time.time() - start_time
     save_glossary(glossary, glossary_path)
 
+    stats = extractor.last_stats
     console.print(
-        f"\n[bold green]抽出完了！[/bold green] (所要時間: {elapsed_time:.1f}秒) "
+        f"\n[bold green]抽出完了！[/bold green] (所要時間: {elapsed_time:.2f}秒) "
         f"用語集を保存しました: [underline]{glossary_path}[/underline]"
     )
+    if extractor.system_one is not None:
+        console.print(
+            f"  [dim]📊 実行統計: チャンク数={stats['total_chunks']} (スキップ={stats['skipped_chunks']}) | "
+            f"Sudachi候補={stats['candidates_total']}→System 1通過={stats['candidates_filtered']}件 | "
+            f"System 1呼出={stats['systemone_calls']}回 | System 2 (LLM)呼出={stats['llm_calls']}回[/dim]"
+        )
+    else:
+        console.print(
+            f"  [dim]📊 実行統計: チャンク数={stats['total_chunks']} | "
+            f"Sudachi候補={stats['candidates_total']}件 | System 2 (LLM)呼出={stats['llm_calls']}回[/dim]"
+        )
     console.print(
         f"  • 新規候補の追加 (status: pending): [bold yellow]{len(summary['added'])}[/bold yellow] 件\n"
         f"  • 既存承認済み用語への追記提案 (pending_updates): [bold green]{len(summary['updated_pending'])}[/bold green] 件\n"

@@ -1,8 +1,8 @@
-from collections.abc import Callable
-import json
-import os
+from __future__ import annotations
 
-from openai import OpenAI
+import os
+from collections.abc import Callable
+from enum import StrEnum
 
 from jjargon.analyzer import SudachiAnalyzer
 from jjargon.models import (
@@ -11,218 +11,161 @@ from jjargon.models import (
     Glossary,
     SudachiCandidate,
     Term,
-    TermStatus,
-    TextExtractionResponse,
-    normalize_key,
+    enrich_proposals_from_sudachi,
+)
+from jjargon.systemone import SystemOneClient, prefilter_sudachi_candidates
+from jjargon.systemtwo import (
+    COMPACT_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    SystemTwoClient,
+    build_user_prompt,
+    select_relevant_denied_surfaces,
+    select_relevant_terms,
 )
 
-SYSTEM_PROMPT = """\
-あなたは日本語テキスト（仕様書、Wiki、技術ドキュメント、業務マニュアル等）から専門用語・社内用語（ジャゴン）を抽出・整理する専門AIアシスタントです。
-与えられた「入力テキスト」「Sudachi形態素解析による抽出候補」「現在の専門用語集」を照らし合わせ、専門用語集に追加・更新すべき用語候補を出力してください。
-
-## 抽出・判定ルール
-1. 新規の専門用語 (proposal_type: "new_term"):
-   - 国語辞書に載っていない専門用語、社内用語、システム名、プロジェクト名、略語などを抽出してください。
-   - 一般的な日常語や単なる人名・数値、および「却下済み用語リスト」に含まれる語は除外してください。
-2. 既存用語への別表記・略称の追加 (proposal_type: "update_existing"):
-   - 既存用語集の用語について、新しい類義語・別表記・英語略称がある場合、canonical_text を既存用語と一致させて提案してください。
-3. 各フィールドの記述方針:
-   - canonical_text: 代表的な正式表記
-   - yomi: カタカナ読み
-   - aliases: 別表記・略称一覧
-   - meaning: 用語の定義・意味
-   - term_type: 用語種別（technical_term, system, product, acronym 等）
-   - examples: 入力テキスト内の実際の用例抜粋
-   - reason: 専門用語と判断した理由
-"""
+__all__ = [
+    "COMPACT_SYSTEM_PROMPT",
+    "SYSTEM_PROMPT",
+    "ExtractionMode",
+    "JargonExtractor",
+    "SystemOneClient",
+    "SystemTwoClient",
+    "build_user_prompt",
+    "select_relevant_denied_surfaces",
+    "select_relevant_terms",
+]
 
 
-def _has_common_subword(text_a: str, text_b: str, min_len: int = 2) -> bool:
-    """2つの正規化済み文字列間に min_len 文字以上の共通部分文字列（構成語の手がかり）があるか判定する"""
-    if len(text_a) < min_len or len(text_b) < min_len:
-        return False
-    shorter, longer = (
-        (text_a, text_b) if len(text_a) <= len(text_b) else (text_b, text_a)
-    )
-    return any(
-        shorter[i : i + min_len] in longer for i in range(len(shorter) - min_len + 1)
-    )
+class ExtractionMode(StrEnum):
+    """専門用語抽出パイプラインの実行モード"""
 
-
-def select_relevant_terms(
-    text_chunk: str,
-    sudachi_candidates: list[SudachiCandidate],
-    glossary: Glossary,
-    max_terms: int = 50,
-) -> list[Term]:
-    """
-    チャンク本文およびSudachi抽出候補に関連する有効な専門用語（status != DENIED）のみを抽出し、
-    関連度スコア順で最大 max_terms 件まで返す。
-    """
-    if max_terms <= 0:
-        return []
-
-    norm_chunk = normalize_key(text_chunk)
-    cand_surfaces = {
-        normalize_key(form)
-        for c in sudachi_candidates
-        for form in (c.surface, c.normalized_form)
-        if form and normalize_key(form)
-    }
-    cand_yomis = {
-        normalize_key(c.yomi)
-        for c in sudachi_candidates
-        if c.yomi and len(normalize_key(c.yomi)) >= 2
-    }
-    long_cand_surfaces = [s for s in cand_surfaces if len(s) >= 2]
-    long_cand_yomis = [y for y in cand_yomis if len(y) >= 3]
-
-    scored_terms: list[tuple[int, int, int, Term]] = []
-
-    for idx, term in enumerate(glossary.terms):
-        if term.status == TermStatus.DENIED:
-            continue
-
-        norm_forms = [
-            normalize_key(f)
-            for f in term.all_surface_forms(include_pending=True)
-            if f and normalize_key(f)
-        ]
-        norm_yomi = normalize_key(term.yomi) if term.yomi else ""
-
-        score = 0
-        # Score 3: 表層形（正式表記・別表記・誤認識）がチャンク本文またはSudachi候補に出現
-        if any(nf in norm_chunk or nf in cand_surfaces for nf in norm_forms):
-            score = 3
-        else:
-            # Score 2: 読みの一致、または構成語（2文字以上）の部分一致（略称・別表記の検出用）
-            yomi_match = bool(
-                len(norm_yomi) >= 3
-                and (
-                    norm_yomi in norm_chunk
-                    or norm_yomi in cand_yomis
-                    or any(norm_yomi in cy or cy in norm_yomi for cy in long_cand_yomis)
-                )
-            )
-            subword_match = any(
-                _has_common_subword(cs, nf, min_len=2)
-                for nf in norm_forms
-                for cs in long_cand_surfaces
-            )
-            if yomi_match or subword_match:
-                score = 2
-
-        if score > 0:
-            scored_terms.append((score, len(term.canonical_text), -idx, term))
-
-    scored_terms.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    return [item[3] for item in scored_terms[:max_terms]]
-
-
-def select_relevant_denied_surfaces(
-    text_chunk: str,
-    sudachi_candidates: list[SudachiCandidate],
-    glossary: Glossary,
-) -> list[str]:
-    """
-    却下済み用語（status == DENIED）のうち、チャンク本文またはSudachi候補に出現する表層形のみを返す。
-    """
-    norm_chunk = normalize_key(text_chunk)
-    cand_surfaces = {
-        normalize_key(form)
-        for c in sudachi_candidates
-        for form in (c.surface, c.normalized_form)
-        if form and normalize_key(form)
-    }
-
-    matched: set[str] = set()
-    for term in glossary.terms:
-        if term.status != TermStatus.DENIED:
-            continue
-        for form in term.all_surface_forms(include_pending=False):
-            nf = normalize_key(form)
-            if nf and (nf in norm_chunk or nf in cand_surfaces):
-                matched.add(form)
-    return sorted(matched)
-
-
-def _format_term_for_prompt(term: Term) -> dict[str, object]:
-    """プロンプト埋め込み用に空フィールドを省いた辞書を作成する"""
-    entry: dict[str, object] = {"canonical_text": term.canonical_text}
-    if term.yomi:
-        entry["yomi"] = term.yomi
-    if term.aliases:
-        entry["aliases"] = term.aliases
-    if term.meaning:
-        entry["meaning"] = term.meaning
-    if term.term_type:
-        entry["term_type"] = term.term_type
-    if term.domain:
-        entry["domain"] = term.domain
-    return entry
-
-
-def build_user_prompt(
-    text_chunk: str,
-    sudachi_candidates: list[SudachiCandidate],
-    glossary: Glossary,
-    domain: str | None = None,
-    max_glossary_terms: int = 50,
-) -> str:
-    sections: list[str] = []
-    if domain:
-        sections.append(f"## 対象ドメイン\n{domain}")
-
-    relevant_terms = select_relevant_terms(
-        text_chunk=text_chunk,
-        sudachi_candidates=sudachi_candidates,
-        glossary=glossary,
-        max_terms=max_glossary_terms,
-    )
-    if relevant_terms:
-        active_terms = [_format_term_for_prompt(t) for t in relevant_terms]
-        sections.append(
-            "## 現在の専門用語集\n"
-            + json.dumps(active_terms, ensure_ascii=False, indent=2)
-        )
-
-    denied = select_relevant_denied_surfaces(
-        text_chunk=text_chunk,
-        sudachi_candidates=sudachi_candidates,
-        glossary=glossary,
-    )
-    if denied:
-        sections.append(f"## 却下済み用語リスト (抽出対象外)\n{', '.join(denied)}")
-
-    cand_lines = [
-        f"- {c.surface} (読み: {c.yomi}, 種別: {'OOV' if c.is_oov else '複合名詞'}, 出現回数: {c.count})"
-        for c in sudachi_candidates[:50]
-    ]
-    sections.append(
-        f"## Sudachi抽出候補 (ヒント)\n{chr(10).join(cand_lines) if cand_lines else '（なし）'}"
-    )
-    sections.append(f"## 入力テキスト\n```text\n{text_chunk}\n```")
-    return "\n\n".join(sections)
+    HYBRID = "hybrid"  # System 1 でトリアージ・候補絞り込み -> System 2 で生成抽出
+    SYSTEM_ONE_ONLY = "system_one_only"  # System 1 のみで判定・分類抽出 (LLM生成不使用・最速)
+    SYSTEM_TWO_ONLY = "system_two_only"  # System 2 のみで生成抽出 (System 1 不使用)
 
 
 class JargonExtractor:
-    """テキストから専門用語候補を抽出してGlossaryに反映するクラス"""
+    """
+    Sudachi形態素解析、System One (判定・分類モデル)、および System Two (生成LLM) を
+    対等なコンポーネントとして統合し、指定された ExtractionMode に従って専門用語を抽出するオーケストレーター。
+    """
 
     def __init__(
         self,
+        mode: ExtractionMode | str = ExtractionMode.HYBRID,
+        system_two: SystemTwoClient | None = None,
+        system_one: SystemOneClient | None = None,
+        max_chunk_chars: int = 4000,
+        analyzer: SudachiAnalyzer | None = None,
+        # 互換性および簡易フラット指定用引数
         model: str | None = None,
         api_base: str | None = None,
         api_key: str | None = None,
-        max_chunk_chars: int = 4000,
+        compact_mode: bool = False,
+        disable_thinking: bool | None = None,
         max_glossary_terms: int = 50,
+        systemone_model: str | None = None,
+        systemone_url: str | None = None,
+        systemone_threshold: float = 0.75,
+        # 従来のブールフラグエイリアス
+        systemone_only: bool = False,
+        use_systemone: bool | None = None,
+        systemone_client: SystemOneClient | None = None,
     ) -> None:
-        self.analyzer = SudachiAnalyzer()
-        self.model = model or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
-        self.api_base = api_base or os.environ.get("OPENAI_BASE_URL")
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY") or "not-needed"
-        self.client = OpenAI(base_url=self.api_base, api_key=self.api_key)
+        self.analyzer = analyzer or SudachiAnalyzer()
         self.max_chunk_chars = max_chunk_chars
-        self.max_glossary_terms = max_glossary_terms
+
+        # 1. 実行モードの解決
+        if systemone_only:
+            self.mode = ExtractionMode.SYSTEM_ONE_ONLY
+        elif use_systemone is False:
+            self.mode = ExtractionMode.SYSTEM_TWO_ONLY
+        elif isinstance(mode, str):
+            self.mode = ExtractionMode(mode)
+        else:
+            self.mode = mode
+
+        # 2. System Two (生成LLM) クライアントの解決
+        if self.mode in (ExtractionMode.HYBRID, ExtractionMode.SYSTEM_TWO_ONLY):
+            if system_two is not None:
+                self.system_two: SystemTwoClient | None = system_two
+            else:
+                self.system_two = SystemTwoClient.from_env(
+                    model=model,
+                    api_base=api_base,
+                    api_key=api_key,
+                    compact_mode=compact_mode,
+                    disable_thinking=compact_mode if disable_thinking is None else disable_thinking,
+                    max_glossary_terms=max_glossary_terms,
+                )
+        else:
+            self.system_two = None
+
+        # 3. System One (意思決定モデル) クライアントの解決
+        if self.mode in (ExtractionMode.HYBRID, ExtractionMode.SYSTEM_ONE_ONLY):
+            s1 = system_one or systemone_client
+            if s1 is not None:
+                self.system_one: SystemOneClient | None = s1
+            else:
+                env_s1_model = os.environ.get("SYSTEMONE_MODEL")
+                env_s1_url = os.environ.get("SYSTEMONE_URL")
+                has_s1_input = bool(systemone_model or systemone_url or env_s1_model or env_s1_url)
+
+                if self.mode == ExtractionMode.SYSTEM_ONE_ONLY or use_systemone is True or has_s1_input:
+                    # 明示的な指定または環境変数がある場合は初期化（不足時はSystemOneClientがValueErrorを送出）
+                    self.system_one = SystemOneClient.from_env(
+                        model=systemone_model,
+                        url=systemone_url,
+                        threshold=systemone_threshold,
+                    )
+                else:
+                    # HYBRID 指定だが System 1 の設定が一切無い場合は、安全に System Two Only として動作
+                    self.system_one = None
+                    self.mode = ExtractionMode.SYSTEM_TWO_ONLY
+        else:
+            self.system_one = None
+
+        self.last_stats: dict[str, int] = {
+            "total_chunks": 0,
+            "llm_calls": 0,
+            "systemone_calls": 0,
+            "skipped_chunks": 0,
+            "candidates_total": 0,
+            "candidates_filtered": 0,
+        }
+
+    # 後方互換性プロパティ
+    @property
+    def model(self) -> str:
+        return self.system_two.model if self.system_two else ""
+
+    @property
+    def api_base(self) -> str | None:
+        return self.system_two.api_base if self.system_two else None
+
+    @property
+    def api_key(self) -> str:
+        return self.system_two.api_key if self.system_two else ""
+
+    @property
+    def client(self):
+        return self.system_two.client if self.system_two else None
+
+    @property
+    def compact_mode(self) -> bool:
+        return self.system_two.compact_mode if self.system_two else False
+
+    @property
+    def max_glossary_terms(self) -> int:
+        return self.system_two.max_glossary_terms if self.system_two else 50
+
+    @property
+    def systemone_client(self) -> SystemOneClient | None:
+        return self.system_one
+
+    @property
+    def systemone_only(self) -> bool:
+        return self.mode == ExtractionMode.SYSTEM_ONE_ONLY
 
     def extract_candidates(
         self,
@@ -231,27 +174,18 @@ class JargonExtractor:
         glossary: Glossary,
         domain: str | None = None,
     ) -> ExtractionResponse:
-        user_prompt = build_user_prompt(
+        """System Two (LLM) を用いてチャンクから専門用語候補を抽出する"""
+        if self.system_two is None:
+            raise RuntimeError(
+                f"現在のモード ({self.mode}) では System Two クライアントが無効です。"
+            )
+        return self.system_two.extract_candidates(
             text_chunk=text_chunk,
             sudachi_candidates=sudachi_candidates,
             glossary=glossary,
             domain=domain,
-            max_glossary_terms=self.max_glossary_terms,
+            sentences=self.analyzer.split_sentences(text_chunk),
         )
-
-        completion = self.client.beta.chat.completions.parse(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format=TextExtractionResponse,
-            temperature=0.1,
-        )
-        parsed = completion.choices[0].message.parsed
-        if parsed is None:
-            raise ValueError("LLMからの構造化出力のパースに失敗しました。")
-        return parsed.to_extraction_response()
 
     def chunk_text(self, text: str) -> list[str]:
         sentences = self.analyzer.split_sentences(text)
@@ -285,8 +219,22 @@ class JargonExtractor:
         include_compounds: bool = True,
         on_progress: Callable[[int, int], None] | None = None,
     ) -> tuple[list[CandidateProposal], dict[str, list[Term]]]:
+        """テキスト全体をチャンク分割し、現在のモードに従って用語集へマージする"""
         chunks = self.chunk_text(text)
         total_chunks = len(chunks)
+        self.last_stats = {
+            "total_chunks": total_chunks,
+            "llm_calls": 0,
+            "systemone_calls": 0,
+            "skipped_chunks": 0,
+            "candidates_total": 0,
+            "candidates_filtered": 0,
+        }
+        if self.system_one is not None:
+            self.system_one.call_count = 0
+        if self.system_two is not None:
+            self.system_two.call_count = 0
+
         if on_progress is not None:
             on_progress(0, total_chunks)
 
@@ -305,13 +253,112 @@ class JargonExtractor:
                 glossary=glossary,
                 include_compounds=include_compounds,
             )
-            response = self.extract_candidates(
-                text_chunk=chunk,
-                sudachi_candidates=sudachi_candidates,
-                glossary=glossary,
-                domain=domain,
-            )
-            for proposal in response.proposals:
+            self.last_stats["candidates_total"] += len(sudachi_candidates)
+
+            chunk_proposals: list[CandidateProposal] = []
+
+            # -------------------------------------------------------------
+            # モード 1: SYSTEM_ONE_ONLY (生成LLM不使用・最速)
+            # -------------------------------------------------------------
+            if self.mode == ExtractionMode.SYSTEM_ONE_ONLY:
+                assert self.system_one is not None
+                active_cands, scores = self.system_one.filter_candidates(
+                    text_chunk=chunk,
+                    candidates=sudachi_candidates,
+                    glossary=glossary,
+                    domain=domain,
+                )
+                self.last_stats["candidates_filtered"] += len(active_cands)
+                self.last_stats["systemone_calls"] = self.system_one.call_count
+
+                if not active_cands:
+                    self.last_stats["skipped_chunks"] += 1
+                else:
+                    relevant_terms = select_relevant_terms(
+                        text_chunk=chunk,
+                        sudachi_candidates=active_cands,
+                        glossary=glossary,
+                        max_terms=self.max_glossary_terms,
+                    )
+                    response = self.system_one.classify_candidates(
+                        text_chunk=chunk,
+                        candidates=active_cands,
+                        glossary=glossary,
+                        relevant_terms=relevant_terms,
+                        domain=domain,
+                        scores=scores,
+                    )
+                    self.last_stats["systemone_calls"] = self.system_one.call_count
+                    enrich_proposals_from_sudachi(
+                        proposals=response.proposals,
+                        sudachi_candidates=sudachi_candidates,
+                        sentences=self.analyzer.split_sentences(chunk),
+                        domain=domain,
+                    )
+                    chunk_proposals = response.proposals
+
+            # -------------------------------------------------------------
+            # モード 2: SYSTEM_TWO_ONLY (LLM生成単体)
+            # -------------------------------------------------------------
+            elif self.mode == ExtractionMode.SYSTEM_TWO_ONLY:
+                assert self.system_two is not None
+                active_cands = sudachi_candidates
+                if self.system_two.compact_mode:
+                    active_cands = prefilter_sudachi_candidates(
+                        candidates=sudachi_candidates,
+                        glossary=glossary,
+                        max_candidates=25,
+                    )
+                response = self.extract_candidates(
+                    text_chunk=chunk,
+                    sudachi_candidates=active_cands,
+                    glossary=glossary,
+                    domain=domain,
+                )
+                self.last_stats["llm_calls"] += 1
+                enrich_proposals_from_sudachi(
+                    proposals=response.proposals,
+                    sudachi_candidates=sudachi_candidates,
+                    sentences=self.analyzer.split_sentences(chunk),
+                    domain=domain,
+                )
+                chunk_proposals = response.proposals
+
+            # -------------------------------------------------------------
+            # モード 3: HYBRID (System 1 でフィルタ/スキップ -> System 2 で生成)
+            # -------------------------------------------------------------
+            elif self.mode == ExtractionMode.HYBRID:
+                assert self.system_one is not None
+                assert self.system_two is not None
+                active_cands, _ = self.system_one.filter_candidates(
+                    text_chunk=chunk,
+                    candidates=sudachi_candidates,
+                    glossary=glossary,
+                    domain=domain,
+                )
+                self.last_stats["candidates_filtered"] += len(active_cands)
+                self.last_stats["systemone_calls"] = self.system_one.call_count
+
+                if not active_cands:
+                    self.last_stats["skipped_chunks"] += 1
+                else:
+                    response = self.extract_candidates(
+                        text_chunk=chunk,
+                        sudachi_candidates=active_cands,
+                        glossary=glossary,
+                        domain=domain,
+                    )
+                    self.last_stats["llm_calls"] += 1
+                    enrich_proposals_from_sudachi(
+                        proposals=response.proposals,
+                        sudachi_candidates=sudachi_candidates,
+                        sentences=self.analyzer.split_sentences(chunk),
+                        domain=domain,
+                    )
+                    chunk_proposals = response.proposals
+
+            # 提案を用語集へマージ
+            for proposal in chunk_proposals:
                 all_proposals.append(proposal)
                 term, action = glossary.merge_proposal(proposal, default_domain=domain)
                 if (
@@ -320,6 +367,7 @@ class JargonExtractor:
                     and term not in summary[action]
                 ):
                     summary[action].append(term)
+
             if on_progress is not None:
                 on_progress(idx, total_chunks)
 

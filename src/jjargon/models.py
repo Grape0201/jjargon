@@ -210,12 +210,133 @@ class TextExtractionResponse(BaseModel):
         )
 
 
+class CompactExtractionProposal(BaseModel):
+    """出力トークン数を最小化した高速抽出用LLMスキーマ（yomi, examples, reason, domainはSudachi等で補完）"""
+
+    proposal_type: Literal["new_term", "update_existing"] = Field(
+        default="new_term",
+        description="新規用語の追加('new_term') または 既存用語への別表記・略称の追加('update_existing')",
+    )
+    canonical_text: str = Field(
+        ...,
+        description="正式採用する表記（update_existingの場合は対象となる既存用語のcanonical_text）",
+    )
+    aliases: list[str] = Field(
+        default_factory=list, description="類義語・別表記・略称のリスト"
+    )
+    term_type: str = Field(
+        default="",
+        description="用語種別（technical_term, business_term, system, product, acronym, organization, workflow）",
+    )
+    meaning: str = Field(
+        default="", description="1文以内の簡潔な用語の意味・定義（update_existingの場合は空文字可）"
+    )
+
+    def to_candidate_proposal(self) -> CandidateProposal:
+        return CandidateProposal(
+            proposal_type=self.proposal_type,
+            canonical_text=self.canonical_text,
+            yomi="",
+            aliases=self.aliases,
+            recognized_texts=[],
+            meaning=self.meaning,
+            term_type=self.term_type,
+            domain="",
+            examples=[],
+            reason="",
+        )
+
+
+class CompactExtractionResponse(BaseModel):
+    """出力トークン最小化版のLLM構造化出力用レスポンス"""
+
+    proposals: list[CompactExtractionProposal] = Field(
+        default_factory=list, description="抽出された専門用語・更新提案のリスト"
+    )
+
+    def to_extraction_response(self) -> ExtractionResponse:
+        return ExtractionResponse(
+            proposals=[p.to_candidate_proposal() for p in self.proposals]
+        )
+
+
 class ExtractionResponse(BaseModel):
     """LLMからの構造化出力レスポンス"""
 
     proposals: list[CandidateProposal] = Field(
         default_factory=list, description="抽出された専門用語・更新提案のリスト"
     )
+
+
+def enrich_proposals_from_sudachi(
+    proposals: list[CandidateProposal],
+    sudachi_candidates: list[SudachiCandidate],
+    sentences: list[str] | None = None,
+    domain: str | None = None,
+    max_examples: int = 3,
+) -> list[CandidateProposal]:
+    """
+    LLMまたはSystem Oneが出力したCandidateProposalに対し、
+    SudachiCandidateの解析結果（yomi, examples）や原文の文リストから不足フィールドを機械的に補完する。
+    """
+    cand_by_norm: dict[str, SudachiCandidate] = {}
+    for c in sudachi_candidates:
+        for form in (c.surface, c.normalized_form):
+            nf = normalize_key(form)
+            if nf and nf not in cand_by_norm:
+                cand_by_norm[nf] = c
+
+    for p in proposals:
+        # 1. yomi の補完（canonical_text を最優先し、なければ aliases から探索）
+        if not p.yomi.strip():
+            norm_canon = normalize_key(p.canonical_text)
+            matched_cand = cand_by_norm.get(norm_canon)
+            if matched_cand is None:
+                for alias in p.aliases:
+                    matched_cand = cand_by_norm.get(normalize_key(alias))
+                    if matched_cand is not None:
+                        break
+            if matched_cand is not None and matched_cand.yomi:
+                p.yomi = matched_cand.yomi
+
+        # 2. examples の補完（canonical_text および aliases のすべての表層形から収集）
+        if not p.examples:
+            collected_examples: list[str] = []
+            search_forms = [p.canonical_text, *p.aliases, *p.recognized_texts]
+            for form in search_forms:
+                nf = normalize_key(form)
+                if not nf:
+                    continue
+                cand = cand_by_norm.get(nf)
+                if cand is not None:
+                    for ex in cand.examples:
+                        if ex and ex not in collected_examples:
+                            collected_examples.append(ex)
+                            if len(collected_examples) >= max_examples:
+                                break
+                if len(collected_examples) >= max_examples:
+                    break
+
+            # Sudachi候補に無かった場合は文リストから部分一致で抜粋
+            if not collected_examples and sentences:
+                norm_forms = [normalize_key(f) for f in search_forms if normalize_key(f)]
+                for sent in sentences:
+                    norm_sent = normalize_key(sent)
+                    if (
+                        any(nf in norm_sent for nf in norm_forms)
+                        and sent not in collected_examples
+                    ):
+                        collected_examples.append(sent)
+                        if len(collected_examples) >= max_examples:
+                            break
+
+            p.examples = collected_examples
+
+        # 3. domain の補完
+        if not p.domain.strip() and domain:
+            p.domain = domain
+
+    return proposals
 
 
 class Glossary(BaseModel):
