@@ -238,8 +238,8 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.4" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "rich", specifier = ">=13.7.0" },
-    { name = "sudachidict-core", specifier = ">=20240409" },
-    { name = "sudachipy", specifier = ">=0.6.8" },
+    { name = "sudachidict-core", specifier = ">=20261015" },
+    { name = "sudachipy", specifier = ">=0.7.0" },
     { name = "typer", specifier = ">=0.12.0" },
 ]
 
