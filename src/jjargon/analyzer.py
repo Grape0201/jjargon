@@ -16,13 +16,14 @@ SINGLE_HIRAGANA_RE = re.compile(r"^[ぁ-んー]$")
 NUMERIC_COUNTER_RE = re.compile(
     r"^[\d０-９一二三四五六七八九十百千万億兆]+(年|月|日|時|分|秒|件|回|人|個|社|名|円|割|%|％|つ|度|番|号|階|歳|週間|ヶ月|か月|カ月)$"
 )
+MAX_EXAMPLES_PER_CANDIDATE = 3
 
 
 class SudachiAnalyzer:
     """Sudachiを用いてテキストからOOV（辞書未登録語）および複合名詞候補を抽出するアナライザ"""
 
-    def __init__(self, dict_type: str = "core") -> None:
-        self._dictionary = Dictionary(dict=dict_type)
+    def __init__(self) -> None:
+        self._dictionary = Dictionary(dict="core")
         self._tokenizer = self._dictionary.tokenizer()
 
     @staticmethod
@@ -95,7 +96,6 @@ class SudachiAnalyzer:
         text: str,
         glossary: Glossary | None = None,
         include_compounds: bool = True,
-        max_examples_per_candidate: int = 3,
     ) -> list[SudachiCandidate]:
         """
         テキストを解析し、OOV（未知語）および複合名詞の候補リストを返す。
@@ -131,7 +131,7 @@ class SudachiAnalyzer:
                 cand.is_compound = cand.is_compound or is_compound
                 if (
                     sentence not in cand.examples
-                    and len(cand.examples) < max_examples_per_candidate
+                    and len(cand.examples) < MAX_EXAMPLES_PER_CANDIDATE
                 ):
                     cand.examples.append(sentence)
             else:

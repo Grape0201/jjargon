@@ -219,7 +219,6 @@ class SystemOneClient:
 
     def filter_candidates(
         self,
-        text_chunk: str,
         candidates: list[SudachiCandidate],
         glossary: Glossary | None = None,
         domain: str | None = None,
@@ -282,7 +281,6 @@ class SystemOneClient:
 
     def classify_candidates(
         self,
-        text_chunk: str,
         candidates: list[SudachiCandidate],
         glossary: Glossary,
         relevant_terms: list[Term] | None = None,

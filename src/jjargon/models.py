@@ -270,12 +270,14 @@ class ExtractionResponse(BaseModel):
     )
 
 
+MAX_PROPOSAL_EXAMPLES = 3
+
+
 def enrich_proposals_from_sudachi(
     proposals: list[CandidateProposal],
     sudachi_candidates: list[SudachiCandidate],
     sentences: list[str] | None = None,
     domain: str | None = None,
-    max_examples: int = 3,
 ) -> list[CandidateProposal]:
     """
     LLMまたはSystem Oneが出力したCandidateProposalに対し、
@@ -314,9 +316,9 @@ def enrich_proposals_from_sudachi(
                     for ex in cand.examples:
                         if ex and ex not in collected_examples:
                             collected_examples.append(ex)
-                            if len(collected_examples) >= max_examples:
+                            if len(collected_examples) >= MAX_PROPOSAL_EXAMPLES:
                                 break
-                if len(collected_examples) >= max_examples:
+                if len(collected_examples) >= MAX_PROPOSAL_EXAMPLES:
                     break
 
             # Sudachi候補に無かった場合は文リストから部分一致で抜粋
@@ -331,7 +333,7 @@ def enrich_proposals_from_sudachi(
                         and sent not in collected_examples
                     ):
                         collected_examples.append(sent)
-                        if len(collected_examples) >= max_examples:
+                        if len(collected_examples) >= MAX_PROPOSAL_EXAMPLES:
                             break
 
             p.examples = collected_examples

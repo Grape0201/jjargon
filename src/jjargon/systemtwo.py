@@ -56,8 +56,9 @@ COMPACT_SYSTEM_PROMPT = """\
 """
 
 
-def _has_common_subword(text_a: str, text_b: str, min_len: int = 2) -> bool:
-    """2つの正規化済み文字列間に min_len 文字以上の共通部分文字列（構成語の手がかり）があるか判定する"""
+def _has_common_subword(text_a: str, text_b: str) -> bool:
+    """2つの正規化済み文字列間に2文字以上の共通部分文字列（構成語の手がかり）があるか判定する"""
+    min_len = 2
     if len(text_a) < min_len or len(text_b) < min_len:
         return False
     shorter, longer = (
@@ -124,7 +125,7 @@ def select_relevant_terms(
                 )
             )
             subword_match = any(
-                _has_common_subword(cs, nf, min_len=2)
+                _has_common_subword(cs, nf)
                 for nf in norm_forms
                 for cs in long_cand_surfaces
             )

@@ -227,7 +227,6 @@ class JargonExtractor:
                         f"モード {effective_mode} の実行には System One クライアントが必要です。"
                     )
                 active_cands, scores = self.system_one.filter_candidates(
-                    text_chunk=chunk,
                     candidates=sudachi_candidates,
                     glossary=glossary,
                     domain=domain,
@@ -248,7 +247,6 @@ class JargonExtractor:
                         max_terms=max_terms,
                     )
                     response = self.system_one.classify_candidates(
-                        text_chunk=chunk,
                         candidates=active_cands,
                         glossary=glossary,
                         relevant_terms=relevant_terms,
@@ -303,7 +301,6 @@ class JargonExtractor:
                         f"モード {effective_mode} の実行には System One と System Two の両クライアントが必要です。"
                     )
                 active_cands, _ = self.system_one.filter_candidates(
-                    text_chunk=chunk,
                     candidates=sudachi_candidates,
                     glossary=glossary,
                     domain=domain,

@@ -6,6 +6,7 @@ from pathlib import Path
 from jjargon.models import Glossary, TermStatus
 
 KATAKANA_ONLY_RE = re.compile(r"^[ァ-ヴー・]+$")
+DEFAULT_SUDACHI_COST = 5000
 
 
 def _hiragana_to_katakana(text: str) -> str:
@@ -26,7 +27,6 @@ def _normalize_reading(yomi: str, fallback_surface: str) -> str:
 def generate_sudachi_csv(
     glossary: Glossary,
     include_aliases: bool = True,
-    cost: int = 5000,
 ) -> str:
     """
     status == 'approved' の専門用語からSudachiユーザー辞書形式（18カラムCSV）を生成する。
@@ -56,7 +56,7 @@ def generate_sudachi_csv(
                 surf,  # 0: 見出し
                 4785,  # 1: 左連接ID (名詞-固有名詞-一般の標準値)
                 4785,  # 2: 右連接ID
-                cost,  # 3: コスト
+                DEFAULT_SUDACHI_COST,  # 3: コスト
                 surf,  # 4: 見出し（単語表記）
                 "名詞",  # 5: 品詞1
                 "固有名詞",  # 6: 品詞2
@@ -81,13 +81,11 @@ def export_sudachi_csv(
     glossary: Glossary,
     output_path: Path,
     include_aliases: bool = True,
-    cost: int = 5000,
 ) -> int:
     """Sudachiユーザー辞書CSVをファイルに書き出し、出力行数を返す"""
     csv_text = generate_sudachi_csv(
         glossary=glossary,
         include_aliases=include_aliases,
-        cost=cost,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(csv_text, encoding="utf-8")
